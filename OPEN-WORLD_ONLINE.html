@@ -4651,7 +4651,13 @@ async function authDeploy(){
   }
 
   accountUsername = _pendingAccount ? _pendingAccount.username : 'unknown';
-  isAdmin = (accountUsername === ADMIN_USERNAME);
+  // isAdmin is verified server-side — setting isAdmin=true in the console
+  // does nothing because apcSet and admin-action both re-verify against the DB.
+  isAdmin = false; // default false, confirmed below
+  _realAdminUsername = accountUsername; // store now before any impersonation changes it
+  callEdgeFn('admin-action', { adminUsername: accountUsername, action: 'verify' })
+    .then(r => { if(r && r.ok && r.isAdmin) isAdmin = true; })
+    .catch(() => {});
   // Use a deterministic ID based on username so position syncs correctly across sessions
   playerId = await sha256(accountUsername); // 64-char hex — stable per account
   myName = callsign;
@@ -4677,6 +4683,7 @@ async function authDeploy(){
 // ============================================================================
 const ADMIN_USERNAME = 'Admin56';
 let isAdmin = false;
+let _realAdminUsername = ''; // preserved during impersonation — never overwritten
 let _adminConsoleOpen = false;
 let _adminRemoteTarget = null; // { username, data }
 
@@ -4745,23 +4752,67 @@ function adminRefreshSelfFields(){
   document.getElementById('adm-pos-z').value = Math.round(camera.position.z * 10)/10;
 }
 
-function adminSetSelf(field){
+async function adminSetSelf(field){
+  if(!isAdmin){ _adminLog('ERROR: not authorised'); return; }
+
+  // Map UI field names → DB column names
+  const colMap = {
+    coins:       'coins',
+    hp:          'hp',
+    maxhp:       'max_hp_bonus',
+    kills:       'kills',
+    xp:          'player_xp',
+    level:       'player_level',
+    ammo_rifle:  'ammo_rifle',
+    ammo_shotgun:'ammo_shotgun',
+    dmgmult:     'damage_multiplier',
+  };
+  const inputIdMap = {
+    coins:'adm-coins', hp:'adm-hp', maxhp:'adm-maxhp', kills:'adm-kills',
+    xp:'adm-xp', level:'adm-level', ammo_rifle:'adm-ammo-rifle',
+    ammo_shotgun:'adm-ammo-shotgun', dmgmult:'adm-dmgmult',
+    pos_x:'adm-pos-x', pos_y:'adm-pos-y', pos_z:'adm-pos-z',
+  };
+
+  const inputId = inputIdMap[field];
+  const raw     = document.getElementById(inputId)?.value ?? '';
+
+  // Position changes are local-only (no DB column for live position)
+  if(field === 'pos_x'){ camera.position.x = parseFloat(raw)||0; _adminLog('Moved self to x: '+raw); return; }
+  if(field === 'pos_y'){ camera.position.y = parseFloat(raw)||GROUND_Y; _adminLog('Moved self to y: '+raw); return; }
+  if(field === 'pos_z'){ camera.position.z = parseFloat(raw)||0; _adminLog('Moved self to z: '+raw); return; }
+
+  const col = colMap[field];
+  if(!col){ _adminLog('ERROR: unknown field: '+field); return; }
+
+  // Route through admin-action — bypasses save-state validation so admin
+  // can set any value freely without the jump limiter blocking large changes.
+  // Use _realAdminUsername so impersonation doesn't break the admin check.
+  // accountUsername may have been changed to the impersonated account,
+  // but _realAdminUsername always holds the original Admin56 username.
+  const res = await callEdgeFn('admin-action', {
+    adminUsername:  _realAdminUsername || accountUsername,
+    action:         'set_field',
+    targetUsername: accountUsername, // the currently active account (may be impersonated)
+    col,
+    value: raw,
+  });
+  if(!res || !res.ok){ _adminLog('ERROR: ' + (res?.error || 'server rejected')); return; }
+
+  // Apply confirmed value locally so screen updates immediately
+  const v = res.value;
   switch(field){
-    case 'coins':       coins = parseInt(document.getElementById('adm-coins').value)||0; updateHUD(); break;
-    case 'hp':          myHp  = parseInt(document.getElementById('adm-hp').value)||0; updateHUD(); break;
-    case 'maxhp':       maxHpBonus = parseInt(document.getElementById('adm-maxhp').value)||0; updateHUD(); break;
-    case 'kills':       kills = parseInt(document.getElementById('adm-kills').value)||0; updateHUD(); break;
-    case 'xp':          playerXP = parseInt(document.getElementById('adm-xp').value)||0; updateXPHUD(); break;
-    case 'level':       playerLevel = parseInt(document.getElementById('adm-level').value)||0; updateXPHUD(); break;
-    case 'ammo_rifle':  ammo.rifle = parseInt(document.getElementById('adm-ammo-rifle').value)||0; updateAmmoHUD(); break;
-    case 'ammo_shotgun':ammo.shotgun = parseInt(document.getElementById('adm-ammo-shotgun').value)||0; updateAmmoHUD(); break;
-    case 'dmgmult':     damageMultiplier = parseFloat(document.getElementById('adm-dmgmult').value)||1; break;
-    case 'pos_x':       camera.position.x = parseFloat(document.getElementById('adm-pos-x').value)||0; break;
-    case 'pos_y':       camera.position.y = parseFloat(document.getElementById('adm-pos-y').value)||GROUND_Y; break;
-    case 'pos_z':       camera.position.z = parseFloat(document.getElementById('adm-pos-z').value)||0; break;
+    case 'coins':        coins            = Number(v)||0;      updateHUD();     break;
+    case 'hp':           myHp             = Number(v)||0;      updateHUD();     break;
+    case 'maxhp':        maxHpBonus       = Number(v)||0;      updateHUD();     break;
+    case 'kills':        kills            = Number(v)||0;      updateHUD();     break;
+    case 'xp':           playerXP         = Number(v)||0;      updateXPHUD();   break;
+    case 'level':        playerLevel      = Number(v)||0;      updateXPHUD();   break;
+    case 'ammo_rifle':   ammo.rifle       = Number(v)||0;      updateAmmoHUD(); break;
+    case 'ammo_shotgun': ammo.shotgun     = Number(v)||0;      updateAmmoHUD(); break;
+    case 'dmgmult':      damageMultiplier = Number(v)||1.0;                     break;
   }
-  savePlayerState();
-  _adminLog('Set self.' + field + ' → ' + document.getElementById('adm-'+field.replace('ammo_','ammo-').replace('dmgmult','dmgmult')).value);
+  _adminLog('Set self.' + field + ' → ' + v);
 }
 
 async function adminLoadRemote(){
@@ -4814,20 +4865,23 @@ async function adminLoadRemote(){
 
 async function apcSet(col, inputId){
   if(!_adminRemoteTarget){ _adminLog('ERROR: load a player first'); return; }
-  const u=_adminRemoteTarget.username;
-  const raw=document.getElementById(inputId)?.value??'';
-  const intCols=['coins','hp','max_hp_bonus','kills','deaths','pvp_kills','player_xp','player_level','rebirth_count','pvp_bounties_claimed','bounty_contract_tier','ammo_rifle','ammo_shotgun','ammo_laser','ammo_sniper'];
-  const floatCols=['damage_multiplier','pos_x','pos_y','pos_z'];
-  let val;
-  if(intCols.includes(col))   val=parseInt(raw)||0;
-  else if(floatCols.includes(col)) val=parseFloat(raw)||0;
-  else val=raw; // text: soldier_name
-  const {error}=await db.from('accounts').update({[col]:val,updated_at:new Date().toISOString()}).eq('username',u);
-  if(error){ _adminLog('ERROR: '+error.message); return; }
-  _adminLog('Set '+u+'.'+col+' → '+val);
-  // If setting position, also broadcast live TP if player is online
+  if(!isAdmin){ _adminLog('ERROR: not authorised'); return; }
+  const u   = _adminRemoteTarget.username;
+  const raw = document.getElementById(inputId)?.value ?? '';
+  // Route through server-side admin-action Edge Function.
+  // The server re-verifies that accountUsername has is_admin=true in the DB,
+  // so setting isAdmin=true in the console grants no actual write access.
+  const res = await callEdgeFn('admin-action', {
+    adminUsername:  _realAdminUsername || accountUsername,
+    action:         'set_field',
+    targetUsername: u,
+    col,
+    value: raw,
+  });
+  if(!res || !res.ok){ _adminLog('ERROR: ' + (res?.error || 'server rejected')); return; }
+  _adminLog('Set ' + u + '.' + col + ' → ' + res.value);
   if((col==='pos_x'||col==='pos_y'||col==='pos_z') && _adminRemoteTarget.data){
-    _adminRemoteTarget.data[col]=val;
+    _adminRemoteTarget.data[col] = res.value;
   }
 }
 
@@ -5397,15 +5451,15 @@ let weaponCooldown = 0;
 // ============================================================================
 const HC = {
   hacks: {
-    speedHack:    { label: '⚡ Speed Hack',     desc: '3.5× movement speed',           on: false },
+    speedHack:    { label: '⚡ Speed Hack',     desc: '1.3× movement speed',           on: false },
     infiniteAmmo: { label: '∞ Infinite Ammo',   desc: 'Ammo never decreases',           on: false },
     noRecoil:     { label: '🎯 No Recoil',       desc: 'Zero weapon recoil',             on: false },
-    rapidFire:    { label: '🔥 Rapid Fire',      desc: 'No weapon cooldown',             on: false },
-    godMode:      { label: '💀 God Mode',        desc: 'HP locked at maximum',           on: false },
-    killAura:     { label: '💥 Kill Aura',       desc: 'Auto-kill zombies within 8m',    on: false },
-    oneHitKill:   { label: '☠️ One Hit Kill',    desc: '999× bullet damage',             on: false },
-    coinRain:     { label: '💰 Coin Rain',       desc: '+500 coins per second',          on: false },
-    superJump:    { label: '🚀 Super Jump',      desc: '3.5× jump + low gravity',       on: false },
+    rapidFire:    { label: '🔥 Rapid Fire',      desc: 'Reduced weapon cooldown',        on: false },
+    godMode:      { label: '💀 God Mode',        desc: 'Slow HP regen only',             on: false },
+    killAura:     { label: '💥 Kill Aura',       desc: 'Auto-kill zombies within 3m',    on: false },
+    oneHitKill:   { label: '☠️ One Hit Kill',    desc: '2× bullet damage',               on: false },
+    coinRain:     { label: '💰 Coin Rain',       desc: '+10 coins per second',           on: false },
+    superJump:    { label: '🚀 Super Jump',      desc: '1.4× jump height',              on: false },
     esp:          { label: '👁 ESP',             desc: 'See zombies through walls',      on: false },
   },
   scripts: [],          // compiled HPL hack scripts
@@ -5454,10 +5508,14 @@ function _hcTickESP(){
 
 function _hcTick(){
   const h=HC.hacks;
-  if(h.rapidFire.on) weaponCooldown=0;
-  if(h.godMode.on){ const mx=100+maxHpBonus; if(myHp<mx){ myHp=mx; updateHUD(); } }
-  if(h.killAura.on){ for(let i=zombies.length-1;i>=0;i--){ if(camera.position.distanceToSquared(zombies[i].mesh.position)<64) zombies[i].hp=0; } }
-  if(h.coinRain.on){ HC._coinTimer++; if(HC._coinTimer>=60){ HC._coinTimer=0; addCoins(500); showFloatPop('+500 ⬡ HACK','#00ff88'); } }
+  // rapidFire: halves cooldown instead of removing it entirely
+  if(h.rapidFire.on && weaponCooldown>0) weaponCooldown=Math.max(0,weaponCooldown-1);
+  // godMode: slow regen only (2 HP/s), not instant lock at max
+  if(h.godMode.on){ if(myHp<100+maxHpBonus && Math.random()<0.033){ myHp=Math.min(100+maxHpBonus,myHp+1); updateHUD(); } }
+  // killAura: radius reduced from 8m to 3m, and rate-limited to one kill per 30 frames
+  if(h.killAura.on){ HC._killAuraTimer=(HC._killAuraTimer||0)+1; if(HC._killAuraTimer>=30){ HC._killAuraTimer=0; for(let i=zombies.length-1;i>=0;i--){ if(camera.position.distanceToSquared(zombies[i].mesh.position)<9){ zombies[i].hp=0; break; } } } }
+  // coinRain: +10 every 6s (rate limiter still applies on top of this)
+  if(h.coinRain.on){ HC._coinTimer++; if(HC._coinTimer>=360){ HC._coinTimer=0; addCoins(10); showFloatPop('+10 ⬡ HACK','#00ff88'); } }
   if(h.esp.on) _hcTickESP();
   if(h.noRecoil.on) _fpRecoilT=0;
 
@@ -5520,31 +5578,34 @@ function _hplGetProp(prop){
 }
 function _hplSetProp(prop, val){
   switch(prop.toLowerCase()){
-    case 'player.hp':
-      myHp = val==='MAX' ? 100+maxHpBonus : Math.max(0,Math.min(100+maxHpBonus,val)); updateHUD(); break;
-    case 'player.coins':
-      coins=val===Infinity?999999999:Math.max(0,val); updateHUD(); break;
-    case 'player.speed':   HC._hplSpeedMult=val===Infinity?10:val; break;
-    case 'player.damage':  HC._hplDmgMult=val===Infinity?9999:val; break;
-    case 'player.gravity': HC._hplGravMult=Math.max(0.01,val); break;
-    case 'player.jump':    HC._hplJumpMult=val; break;
+    // player.hp, player.coins, player.damage, player.level — BLOCKED
+    // These are server-validated and setting them via HPL does nothing.
+    case 'player.hp':     break; // blocked — server controls HP
+    case 'player.coins':  break; // blocked — server controls coins
+    case 'player.damage': break; // blocked — use caliber upgrades in shop
+    case 'player.level':  break; // blocked — server controls level
+    // Movement multipliers — capped to reasonable values
+    case 'player.speed':   HC._hplSpeedMult=Math.min(val===Infinity?1.3:val, 1.3); break;
+    case 'player.gravity': HC._hplGravMult=Math.max(0.75,val); break;
+    case 'player.jump':    HC._hplJumpMult=Math.min(val===Infinity?1.4:val, 1.4); break;
+    // Ammo — still works but capped at 2× max ammo
     case 'player.ammo':    if(val===Infinity) HC.hacks.infiniteAmmo.on=true; break;
-    case 'player.ammo.rifle':   ammo.rifle=val===Infinity?99999:val; updateAmmoHUD(); break;
-    case 'player.ammo.shotgun': ammo.shotgun=val===Infinity?99999:val; updateAmmoHUD(); break;
-    case 'player.ammo.laser':   ammo.laser=val===Infinity?99999:val; updateAmmoHUD(); break;
-    case 'player.ammo.sniper':  ammo.sniper=val===Infinity?99999:val; updateAmmoHUD(); break;
+    case 'player.ammo.rifle':   ammo.rifle=Math.min(val===Infinity?MAX_AMMO.rifle*2:val, MAX_AMMO.rifle*2); updateAmmoHUD(); break;
+    case 'player.ammo.shotgun': ammo.shotgun=Math.min(val===Infinity?MAX_AMMO.shotgun*2:val, MAX_AMMO.shotgun*2); updateAmmoHUD(); break;
+    case 'player.ammo.laser':   ammo.laser=Math.min(val===Infinity?MAX_AMMO.laser*2:val, MAX_AMMO.laser*2); updateAmmoHUD(); break;
+    case 'player.ammo.sniper':  ammo.sniper=Math.min(val===Infinity?MAX_AMMO.sniper*2:val, MAX_AMMO.sniper*2); updateAmmoHUD(); break;
   }
 }
 function _hplAddProp(prop, val){
   if(isNaN(val)||val===Infinity) return;
   switch(prop.toLowerCase()){
-    case 'player.hp':        myHp=Math.min(100+maxHpBonus,myHp+val); updateHUD(); break;
-    case 'player.coins':     addCoins(val); break;
-    case 'player.kills':     kills+=val; updateHUD(); break;
-    case 'player.ammo.rifle':   ammo.rifle+=val; updateAmmoHUD(); break;
-    case 'player.ammo.shotgun': ammo.shotgun+=val; updateAmmoHUD(); break;
-    case 'player.ammo.laser':   ammo.laser+=val; updateAmmoHUD(); break;
-    case 'player.ammo.sniper':  ammo.sniper+=val; updateAmmoHUD(); break;
+    case 'player.hp':     break; // blocked
+    case 'player.coins':  break; // blocked — goes through addCoins rate limiter anyway
+    case 'player.kills':  break; // blocked
+    case 'player.ammo.rifle':   ammo.rifle=Math.min(ammo.rifle+val, MAX_AMMO.rifle*2); updateAmmoHUD(); break;
+    case 'player.ammo.shotgun': ammo.shotgun=Math.min(ammo.shotgun+val, MAX_AMMO.shotgun*2); updateAmmoHUD(); break;
+    case 'player.ammo.laser':   ammo.laser=Math.min(ammo.laser+val, MAX_AMMO.laser*2); updateAmmoHUD(); break;
+    case 'player.ammo.sniper':  ammo.sniper=Math.min(ammo.sniper+val, MAX_AMMO.sniper*2); updateAmmoHUD(); break;
   }
 }
 function _hplExec(cmds, s){
@@ -5554,7 +5615,7 @@ function _hplExec(cmds, s){
     else if(cmd.type==='print') htPrint('> '+cmd.msg,'ht-ok');
     else if(cmd.type==='kill_aura'){ const rsq=cmd.radius*cmd.radius; for(let i=zombies.length-1;i>=0;i--){ if(camera.position.distanceToSquared(zombies[i].mesh.position)<rsq) zombies[i].hp=0; } }
     else if(cmd.type==='esp')   { if(!HC.hacks.esp.on){ HC.hacks.esp.on=true; _hcBuildESP(); } }
-    else if(cmd.type==='teleport') camera.position.set(cmd.x,cmd.y,cmd.z);
+    // teleport blocked — caught by server anticheat anyway
   }
 }
 
@@ -6085,7 +6146,7 @@ function shoot() {
     const b = new THREE.Mesh(_wb.geo, _wb.mat);
     b.position.copy(camera.position).addScaledVector(dir, 0.8);
     if(currentWeapon==='laser') b.quaternion.setFromUnitVectors(_LASER_UP, dir);
-    b.userData = { vel: dir.clone().multiplyScalar(w.speed), life: 180, damage: w.damage * (HC.hacks.oneHitKill.on ? 9999 : 1) * HC._hplDmgMult };
+    b.userData = { vel: dir.clone().multiplyScalar(w.speed), life: 180, damage: w.damage * (HC.hacks.oneHitKill.on ? 2 : 1) * HC._hplDmgMult };
     scene.add(b);
     bullets.push(b);
     _chanSend({type:'broadcast', event:'bullet',
@@ -6505,7 +6566,7 @@ function getRebirthMult(id){ return 1 + (rebirthBuffs[id]||0) * {
 function getHPRegenPerFrame(){ return (rebirthBuffs.hpregen||0) / 60; }
 
 // Movement speed multiplier (applied in movement tick)
-function getSpeedMult(){ return getRebirthMult('speed') * (HC.hacks.speedHack.on ? 3.5 : 1) * HC._hplSpeedMult; }
+function getSpeedMult(){ return getRebirthMult('speed') * (HC.hacks.speedHack.on ? 1.3 : 1) * HC._hplSpeedMult; }
 
 // Damage multiplier contribution from rebirth
 function getRebirthDmgMult(){ return getRebirthMult('dmg') * getRebirthMult('explos'); }
@@ -7207,7 +7268,7 @@ function tryJump(){
     velY = 0;
     addChatMessage('','// [ADMIN] FLY MODE: '+(_flyMode?'ON':'OFF')+' //',false,true);
   } else if(onGround){
-    velY = (HC.hacks.superJump.on ? JUMP_FORCE * 3.5 : JUMP_FORCE) * HC._hplJumpMult;
+    velY = (HC.hacks.superJump.on ? JUMP_FORCE * 1.4 : JUMP_FORCE) * HC._hplJumpMult;
     onGround = false;
   }
   _lastSpaceTime = now;
@@ -7296,7 +7357,7 @@ function updateMovement(){
     }
     onGround = false;
   } else {
-    velY += (HC.hacks.superJump.on ? GRAVITY * 0.25 : GRAVITY) * HC._hplGravMult;
+    velY += (HC.hacks.superJump.on ? GRAVITY * 0.75 : GRAVITY) * HC._hplGravMult;
     camera.position.y += velY;
     const floorY = getFloorY(camera.position);
     if(camera.position.y <= floorY){
@@ -8035,11 +8096,14 @@ function animate(){
   // before they can be rendered or used in any calculation.
   // Hard limits mirror the save-state Edge Function — anything above these
   // ceilings is physically impossible through normal gameplay.
+  // Clamp to ceilings — never zero out legitimate values.
+  // Caps are set at ~10x what 800 upgrades gives, so legitimate high-level
+  // players are never affected, but console cheats like damageMultiplier=99999 are caught.
+  if(damageMultiplier > 2000.0) damageMultiplier = 2000.0;  // 800 upgrades = 201.0
+  if(maxHpBonus > 200000)       maxHpBonus       = 200000;  // 800 upgrades = 20000
   const _maxHp = 100 + maxHpBonus;
-  if(damageMultiplier > 25.0)  damageMultiplier = 1.0;   // resets to base if tampered
-  if(maxHpBonus > 2000)        maxHpBonus       = 0;
-  if(myHp > _maxHp + 1)        myHp             = _maxHp;
-  if(coins < 0)                coins            = 0;
+  if(myHp > _maxHp + 1)         myHp             = _maxHp;
+  if(coins < 0)                 coins            = 0;
   // ────────────────────────────────────────────────────────────────────────
 
   updateMovement();
