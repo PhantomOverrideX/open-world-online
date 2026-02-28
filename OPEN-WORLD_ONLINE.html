@@ -7143,7 +7143,334 @@ function updateZombies(){
   }
 }
 
-// Grenade/C4 explosion damage to zombies (called from explodeGrenade/detonateC4)
+// ============================================================================
+//  COWS WITH GUNS — danger zone enemies
+// ============================================================================
+// Shared cow geometry (reused across all instances)
+const _cowG = {
+  body:   new THREE.BoxGeometry(0.90, 0.55, 1.50),
+  head:   new THREE.BoxGeometry(0.50, 0.46, 0.54),
+  snout:  new THREE.BoxGeometry(0.30, 0.22, 0.18),
+  ear:    new THREE.BoxGeometry(0.12, 0.20, 0.08),
+  uLeg:   new THREE.BoxGeometry(0.20, 0.38, 0.20),
+  lLeg:   new THREE.BoxGeometry(0.17, 0.36, 0.17),
+  hoof:   new THREE.BoxGeometry(0.20, 0.10, 0.24),
+  tail:   new THREE.BoxGeometry(0.07, 0.32, 0.07),
+  gun:    new THREE.BoxGeometry(0.10, 0.10, 0.55),
+  barrel: new THREE.BoxGeometry(0.07, 0.07, 0.36),
+  stock:  new THREE.BoxGeometry(0.08, 0.20, 0.16),
+};
+const _cowMats = {
+  body:  new THREE.MeshLambertMaterial({ color: 0xf5f0e8 }),
+  patch: new THREE.MeshLambertMaterial({ color: 0x2a1a0a }),
+  hoof:  new THREE.MeshLambertMaterial({ color: 0x1a1008 }),
+  snout: new THREE.MeshLambertMaterial({ color: 0xffccaa }),
+  eye:   new THREE.MeshBasicMaterial({ color: 0x111111 }),
+  nose:  new THREE.MeshBasicMaterial({ color: 0xff6688 }),
+  gun:   new THREE.MeshLambertMaterial({ color: 0x2a2a2a }),
+  stock: new THREE.MeshLambertMaterial({ color: 0x6a3a10 }),
+};
+
+function makeCowModel(){
+  const g = new THREE.Group();
+  const add = (geo, mat, x, y, z, rx, ry, rz) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    if(rx) m.rotation.x = rx;
+    if(ry) m.rotation.y = ry;
+    if(rz) m.rotation.z = rz;
+    g.add(m); return m;
+  };
+  // Body with black patches
+  add(_cowG.body,  _cowMats.body,  0, 0.72, 0);
+  const patchGeo = new THREE.BoxGeometry(0.32, 0.28, 0.14);
+  add(patchGeo, _cowMats.patch,  0.44, 0.78,  0.20);
+  add(patchGeo, _cowMats.patch, -0.44, 0.65, -0.30);
+  // Head
+  add(_cowG.head,  _cowMats.body,  0, 1.08, 0.82);
+  add(_cowG.snout, _cowMats.snout, 0, 1.02, 1.12);
+  const nostrilGeo = new THREE.BoxGeometry(0.06, 0.04, 0.04);
+  add(nostrilGeo, _cowMats.nose, -0.08, 1.01, 1.22);
+  add(nostrilGeo, _cowMats.nose,  0.08, 1.01, 1.22);
+  const eyeGeo = new THREE.BoxGeometry(0.08, 0.08, 0.05);
+  add(eyeGeo, _cowMats.eye, -0.18, 1.16, 1.08);
+  add(eyeGeo, _cowMats.eye,  0.18, 1.16, 1.08);
+  add(_cowG.ear, _cowMats.snout, -0.28, 1.26, 0.80);
+  add(_cowG.ear, _cowMats.snout,  0.28, 1.26, 0.80);
+  // Tail
+  add(_cowG.tail, _cowMats.hoof, 0, 0.78, -0.80, 0.3);
+  // Four legs
+  for(const [lx, lz] of [[-0.32,-0.55],[0.32,-0.55],[-0.32,0.55],[0.32,0.55]]){
+    add(_cowG.uLeg, _cowMats.body, lx, 0.34, lz);
+    add(_cowG.lLeg, _cowMats.body, lx, 0.00, lz);
+    add(_cowG.hoof, _cowMats.hoof, lx,-0.20, lz);
+  }
+  // Gun held on right side, pointing forward
+  add(_cowG.gun,    _cowMats.gun,   0.46, 0.85, 0.55);
+  add(_cowG.barrel, _cowMats.gun,   0.46, 0.85, 0.90);
+  add(_cowG.stock,  _cowMats.stock, 0.46, 0.80, 0.30);
+  // Muzzle flash (hidden until firing)
+  const flashGeo = new THREE.BoxGeometry(0.12, 0.12, 0.08);
+  const flashMat = new THREE.MeshBasicMaterial({ color: 0xffee44, transparent: true, opacity: 0 });
+  const flash = new THREE.Mesh(flashGeo, flashMat);
+  flash.position.set(0.46, 0.85, 1.14);
+  g.add(flash);
+  g.userData.muzzleFlash = flash;
+  g.userData.muzzleFlashTimer = 0;
+  return g;
+}
+
+const cows = [];
+let cowSpawnTimer = 0;
+let _cowT0SkipCounter = 0;
+
+// Spawn params per tier index: very rare at T0–T1, ramps up sharply at T3–T5
+function getCowSpawnParams(ti){
+  return [
+    { interval: 720, perCycle: 1, cap:  2 },  // T1 FERAL   — 1 per ~12 zombie cycles
+    { interval: 480, perCycle: 1, cap:  4 },  // T2 RABID   — occasional
+    { interval: 280, perCycle: 2, cap:  8 },  // T3 BLOATED
+    { interval: 160, perCycle: 3, cap: 14 },  // T4 BERSERKER
+    { interval:  90, perCycle: 4, cap: 20 },  // T5 ABOMINATION
+  ][Math.min(ti, 4)];
+}
+
+function spawnCow(){
+  const pz = camera.position.z;
+  if(pz <= 2) return;
+  const ti = ZOMBIE_TIERS.indexOf(getZombieTier(Math.max(5, pz)));
+  const params = getCowSpawnParams(ti);
+  if(cows.length >= params.cap) return;
+  // Extra rarity gate at tier 0 — only actually spawn 1-in-8 calls
+  if(ti === 0){ _cowT0SkipCounter++; if(_cowT0SkipCounter < 8) return; _cowT0SkipCounter = 0; }
+  let x, spawnZ;
+  for(let t = 0; t < 30; t++){
+    spawnZ = Math.max(5, pz + 14 + Math.random() * 30);
+    x = camera.position.x + (Math.random() - 0.5) * 50;
+    x = Math.max(-190, Math.min(190, x));
+    spawnZ = Math.max(5, Math.min(370, spawnZ));
+    if(!checkEnvCol({ x, y: 0, z: spawnZ })) break;
+  }
+  const tier = getZombieTier(spawnZ);
+  const tierI = ZOMBIE_TIERS.indexOf(tier);
+  const _lvS = 1 + playerLevel * 0.08;
+  const hp  = Math.round(tier.hp   * 1.4 * _lvS);
+  const dmg = Math.round(tier.damage * 1.2 * (1 + playerLevel * 0.06));
+  const flY = getFloorY({ x, y: GROUND_Y, z: spawnZ }) - GROUND_Y;
+  const mesh = makeCowModel();
+  mesh.position.set(x, flY, spawnZ);
+  scene.add(mesh);
+  const hpSpr = makeHPSprite();
+  hpSpr.position.set(x, flY + 1.7, spawnZ);
+  scene.add(hpSpr);
+  drawHPBar(hpSpr, hp, hp);
+  cows.push({ mesh, hpSpr, hp, maxHp: hp, damage: dmg,
+    speed: tier.speed * 0.85, shootCd: 0,
+    shootCdMax: Math.max(40, 120 - tierI * 18),
+    walkT: 0, tier, tierIndex: tierI });
+}
+
+function updateCowsWithGuns(){
+  cowSpawnTimer++;
+  const pz = camera.position.z;
+  if(pz > 2){
+    const ti = ZOMBIE_TIERS.indexOf(getZombieTier(Math.max(5, pz)));
+    const p = getCowSpawnParams(ti);
+    if(cowSpawnTimer >= p.interval){ cowSpawnTimer = 0; for(let i = 0; i < p.perCycle; i++) spawnCow(); }
+  }
+  const px = camera.position.x, cz2 = camera.position.z;
+  for(let i = cows.length - 1; i >= 0; i--){
+    const cow = cows[i];
+    if(cow.hp <= 0){
+      const np = cow.mesh.position;
+      const drops = 2 + cow.tierIndex * 2;
+      for(let d = 0; d < drops; d++){
+        const flY2 = getFloorY({ x: np.x, y: GROUND_Y, z: np.z }) - GROUND_Y;
+        spawnCoin(np.x + (Math.random()-0.5)*1.8, flY2, np.z + (Math.random()-0.5)*1.8, 12 + cow.tierIndex * 8);
+      }
+      scene.remove(cow.mesh); scene.remove(cow.hpSpr);
+      cows.splice(i, 1); continue;
+    }
+    // Muzzle flash fade
+    if(cow.mesh.userData.muzzleFlashTimer > 0){
+      cow.mesh.userData.muzzleFlashTimer--;
+      cow.mesh.userData.muzzleFlash.material.opacity = cow.mesh.userData.muzzleFlashTimer / 4;
+    }
+    const dx = px - cow.mesh.position.x, dz = cz2 - cow.mesh.position.z;
+    const dist = Math.sqrt(dx*dx + dz*dz);
+    cow.mesh.rotation.y = Math.atan2(dx, dz);
+    cow.walkT += 0.10;
+    cow.mesh.position.y += Math.sin(cow.walkT * 2) * 0.003;
+    // Move toward player
+    if(!dead && dist < 28){
+      cow.mesh.position.x += (dx/dist) * cow.speed;
+      cow.mesh.position.z += (dz/dist) * cow.speed;
+      cow.hpSpr.position.x = cow.mesh.position.x;
+      cow.hpSpr.position.z = cow.mesh.position.z;
+    }
+    // Shoot player
+    if(!dead && dist < 20){
+      cow.shootCd--;
+      if(cow.shootCd <= 0){
+        cow.shootCd = cow.shootCdMax + Math.floor(Math.random() * 30);
+        const hitChance = Math.max(0.25, 1 - dist / 20 * 0.7);
+        if(Math.random() < hitChance){ takeDamage(cow.damage); showFloatPop('🐄 -' + cow.damage, '#ff8800'); }
+        cow.mesh.userData.muzzleFlash.material.opacity = 1;
+        cow.mesh.userData.muzzleFlashTimer = 4;
+      }
+    }
+    // Headbutt at melee range
+    if(!dead && dist < 1.8 && cow.shootCd <= 0){
+      takeDamage(Math.round(cow.damage * 1.5));
+      showFloatPop('🐄 HEADBUTT!', '#ff4400');
+      cow.shootCd = cow.shootCdMax;
+    }
+    // Bullet hits
+    for(let bi = bullets.length - 1; bi >= 0; bi--){
+      const b = bullets[bi];
+      if(b.position.distanceToSquared(cow.mesh.position) < 3.0){
+        const dmg = Math.round((b.userData.damage||25) * damageMultiplier * getRebirthDmgMult());
+        cow.hp = Math.max(0, cow.hp - dmg);
+        drawHPBar(cow.hpSpr, cow.hp, cow.maxHp);
+        showFloatPop('-' + dmg, '#ff6600');
+        if(cow.hp <= 0){
+          kills++;
+          addCoins(Math.round((18 + cow.tierIndex*14) * getRebirthMult('coinmul')));
+          addXP(Math.round((40 + cow.tierIndex*35) * getRebirthMult('xpgain')));
+          showFloatPop('+' + Math.round((18+cow.tierIndex*14)*getRebirthMult('coinmul')) + ' ⬡', '#ffd700');
+          showCoinPop('+' + Math.round((18+cow.tierIndex*14)*getRebirthMult('coinmul')));
+          updateHUD();
+        }
+        showHitMarker();
+        scene.remove(b); bullets.splice(bi, 1); break;
+      }
+    }
+  }
+}
+
+// ============================================================================
+//  ONIONS — passive safe-zone wanderers
+// ============================================================================
+const _onionG = {
+  bulb:     new THREE.SphereGeometry(0.38, 8, 6),
+  bodyBot:  new THREE.SphereGeometry(0.32, 8, 6),
+  neck:     new THREE.CylinderGeometry(0.14, 0.18, 0.24, 7),
+  sprout:   new THREE.CylinderGeometry(0.03, 0.06, 0.40, 5),
+  leaf:     new THREE.BoxGeometry(0.06, 0.30, 0.06),
+  uArm:     new THREE.BoxGeometry(0.10, 0.28, 0.10),
+  lArm:     new THREE.BoxGeometry(0.09, 0.24, 0.09),
+  hand:     new THREE.SphereGeometry(0.07, 5, 4),
+  uLeg:     new THREE.BoxGeometry(0.11, 0.26, 0.11),
+  lLeg:     new THREE.BoxGeometry(0.10, 0.22, 0.10),
+  foot:     new THREE.BoxGeometry(0.14, 0.07, 0.20),
+  eyeWhite: new THREE.SphereGeometry(0.07, 5, 4),
+  pupil:    new THREE.SphereGeometry(0.04, 4, 4),
+  smile:    new THREE.BoxGeometry(0.18, 0.04, 0.04),
+  smileEnd: new THREE.BoxGeometry(0.04, 0.06, 0.04),
+};
+const _onionMats = {
+  skin:     new THREE.MeshLambertMaterial({ color: 0xd4a017 }),
+  inner:    new THREE.MeshLambertMaterial({ color: 0xf2d57e }),
+  sprout:   new THREE.MeshLambertMaterial({ color: 0x3aaa44 }),
+  eyeWhite: new THREE.MeshLambertMaterial({ color: 0xffffff }),
+  pupil:    new THREE.MeshBasicMaterial({ color: 0x111111 }),
+  smile:    new THREE.MeshBasicMaterial({ color: 0x3a1a00 }),
+  limb:     new THREE.MeshLambertMaterial({ color: 0xc49010 }),
+  hand:     new THREE.MeshLambertMaterial({ color: 0xf2d57e }),
+};
+
+function makeOnionModel(){
+  const g = new THREE.Group();
+  const add = (geo, mat, x, y, z, rx, ry, rz) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    if(rx) m.rotation.x = rx;
+    if(ry) m.rotation.y = ry;
+    if(rz) m.rotation.z = rz;
+    g.add(m); return m;
+  };
+  // Onion body — rounded lower + upper bulge
+  add(_onionG.bodyBot, _onionMats.inner, 0, 0.40, 0);
+  add(_onionG.bulb,    _onionMats.skin,  0, 0.65, 0);
+  add(_onionG.neck,    _onionMats.skin,  0, 1.02, 0);
+  // Green sprout on top
+  add(_onionG.sprout, _onionMats.sprout,  0,    1.36, 0);
+  add(_onionG.leaf,   _onionMats.sprout, -0.08, 1.50, 0, 0, 0, -0.3);
+  add(_onionG.leaf,   _onionMats.sprout,  0.08, 1.50, 0, 0, 0,  0.3);
+  add(_onionG.leaf,   _onionMats.sprout,  0,    1.52, 0.08, 0.3);
+  // Face
+  add(_onionG.eyeWhite, _onionMats.eyeWhite, -0.13, 0.78, 0.36);
+  add(_onionG.eyeWhite, _onionMats.eyeWhite,  0.13, 0.78, 0.36);
+  add(_onionG.pupil,    _onionMats.pupil,    -0.13, 0.78, 0.42);
+  add(_onionG.pupil,    _onionMats.pupil,     0.13, 0.78, 0.42);
+  add(_onionG.smile,    _onionMats.smile,     0,    0.62, 0.38);
+  add(_onionG.smileEnd, _onionMats.smile,    -0.09, 0.63, 0.38);
+  add(_onionG.smileEnd, _onionMats.smile,     0.09, 0.63, 0.38);
+  // Arms
+  add(_onionG.uArm, _onionMats.limb, -0.44, 0.68, 0, 0, 0,  0.28);
+  add(_onionG.lArm, _onionMats.limb, -0.58, 0.44, 0, 0, 0,  0.10);
+  add(_onionG.hand, _onionMats.hand, -0.64, 0.30, 0);
+  add(_onionG.uArm, _onionMats.limb,  0.44, 0.68, 0, 0, 0, -0.28);
+  add(_onionG.lArm, _onionMats.limb,  0.58, 0.44, 0, 0, 0, -0.10);
+  add(_onionG.hand, _onionMats.hand,  0.64, 0.30, 0);
+  // Legs
+  add(_onionG.uLeg, _onionMats.limb, -0.16, 0.14, 0);
+  add(_onionG.lLeg, _onionMats.limb, -0.16,-0.14, 0);
+  add(_onionG.foot, _onionMats.limb, -0.16,-0.30, 0.04);
+  add(_onionG.uLeg, _onionMats.limb,  0.16, 0.14, 0);
+  add(_onionG.lLeg, _onionMats.limb,  0.16,-0.14, 0);
+  add(_onionG.foot, _onionMats.limb,  0.16,-0.30, 0.04);
+  return g;
+}
+
+const onions = [];
+const ONION_COUNT = 8;
+const ONION_AREA  = { xMin: -55, xMax: 55, zMin: -80, zMax: -2 };
+
+function spawnOnions(){
+  for(let i = 0; i < ONION_COUNT; i++){
+    const x = ONION_AREA.xMin + Math.random() * (ONION_AREA.xMax - ONION_AREA.xMin);
+    const z = ONION_AREA.zMin + Math.random() * (ONION_AREA.zMax - ONION_AREA.zMin);
+    const flY = getFloorY({ x, y: GROUND_Y, z }) - GROUND_Y;
+    const mesh = makeOnionModel();
+    mesh.position.set(x, flY, z);
+    mesh.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(mesh);
+    onions.push({
+      mesh, walkT: 0,
+      wanderAngle: Math.random() * Math.PI * 2,
+      wanderTimer: Math.floor(Math.random() * 180),
+    });
+  }
+}
+
+function updateOnions(){
+  for(const onion of onions){
+    onion.wanderTimer--;
+    if(onion.wanderTimer <= 0){
+      onion.wanderTimer = 180 + Math.floor(Math.random() * 180);
+      onion.wanderAngle += (Math.random() - 0.5) * Math.PI * 1.4;
+    }
+    const spd = 0.012;
+    const nx = onion.mesh.position.x + Math.sin(onion.wanderAngle) * spd;
+    const nz = onion.mesh.position.z + Math.cos(onion.wanderAngle) * spd;
+    if(nx >= ONION_AREA.xMin && nx <= ONION_AREA.xMax &&
+       nz >= ONION_AREA.zMin && nz <= ONION_AREA.zMax &&
+       !checkEnvCol({ x: nx, y: 0, z: nz })){
+      onion.mesh.position.x = nx;
+      onion.mesh.position.z = nz;
+    } else {
+      onion.wanderAngle += Math.PI + (Math.random() - 0.5) * 0.8;
+      onion.wanderTimer = 60;
+    }
+    onion.mesh.rotation.y = onion.wanderAngle;
+    // Walking bob
+    onion.walkT += 0.10;
+    onion.mesh.position.y += Math.sin(onion.walkT * 2) * 0.003;
+  }
+}
+
+
 function explosionDamageZombies(pos, radius, damage){
   // Boss hit from explosion
   if(activeBoss){
@@ -7167,6 +7494,17 @@ function explosionDamageZombies(pos, radius, damage){
       z.hp=Math.max(0,z.hp-dmg);
       drawHPBar(z.hpSpr,z.hp,z.maxHp||ZOMBIE_TIERS[0].hp);
       if(z.hp<=0){ kills++; const _ti2=z.tier?ZOMBIE_TIERS.indexOf(z.tier):0; const _kc2=Math.round((10+_ti2*10)*getRebirthMult("coinmul")); addCoins(_kc2); const _xp2=Math.round((XP_PER_TIER[_ti2]||25)*getRebirthMult("xpgain")); addXP(_xp2); showFloatPop('+'+_xp2+' XP','#00ffff'); showCoinPop('+'+_kc2+' COINS'); updateHUD(); }
+    }
+  }
+  // Cows also take explosion damage
+  for(const cow of cows){
+    const dsq=pos.distanceToSquared(cow.mesh.position);
+    if(dsq<rsq){
+      const falloff=1-Math.sqrt(dsq)/radius;
+      const dmg=Math.round(damage*falloff*damageMultiplier*getRebirthDmgMult());
+      cow.hp=Math.max(0,cow.hp-dmg);
+      drawHPBar(cow.hpSpr,cow.hp,cow.maxHp);
+      if(cow.hp<=0){ kills++; addCoins(Math.round((18+cow.tierIndex*14)*getRebirthMult('coinmul'))); addXP(Math.round((40+cow.tierIndex*35)*getRebirthMult('xpgain'))); updateHUD(); }
     }
   }
 }
@@ -8811,6 +9149,8 @@ function animate(){
   lerpRemotePlayers();
   updateBullets();
   updateZombies();
+  updateCowsWithGuns();
+  updateOnions();
   updateMerchantProximity();
   updateShopBearing();
   if(typeof updateHorseDealerNPC!=='undefined') updateHorseDealerNPC();
@@ -8875,6 +9215,7 @@ buildTrain();
 buildHorseStable();
 buildHorseDealerNPC();
 for(let _si=0;_si<6;_si++) spawnZombie();
+spawnOnions();
 animate();
 </script>
 
