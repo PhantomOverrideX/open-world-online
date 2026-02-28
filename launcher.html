@@ -239,9 +239,7 @@
 
     // Launch in blob — gameSource is a local variable in this IIFE closure.
     // There is no window.gameSource to inspect or modify.
-    const blob = new Blob([gameSource], { type:'text/html' });
-    const url  = URL.createObjectURL(blob);
-    window.location.href = url;
+    window.location.href = GAME_FILE + '?_=' + Date.now();
 
     // Null out the source reference immediately so it can't be read
     // from memory via heap snapshot in DevTools
