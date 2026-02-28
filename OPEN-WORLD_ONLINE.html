@@ -912,6 +912,26 @@
 
     // ── Server-side validation helpers ──────────────────────────────
     // callEdgeFn: fire-and-forget call to a Supabase Edge Function.
+// ── Anti-debug timing detector ────────────────────────────────────────────────
+// Checks if execution was paused (breakpoint) by measuring setInterval drift.
+// Cannot prevent DevTools, but logs anomalies to server for account flagging.
+(function _antiDebug(){
+  let _lastTick = Date.now();
+  let _dbFlagSent = false;
+  setInterval(function(){
+    const now  = Date.now();
+    const gap  = now - _lastTick;
+    _lastTick  = now;
+    // Normal gap should be ~2000ms. If > 8s, execution was paused.
+    if(gap > 8000 && !_dbFlagSent && typeof accountUsername !== 'undefined' && accountUsername){
+      _dbFlagSent = true; // send once per session
+      if(typeof callEdgeFn === 'function'){
+        callEdgeFn('anticheat', { username: accountUsername, type:'debugger_pause', gap });
+      }
+      setTimeout(()=>{ _dbFlagSent = false; }, 60000); // allow re-flag after 60s
+    }
+  }, 2000);
+})();
     // Returns parsed JSON or null on network error.
     const _EDGE_BASE = SUPABASE_URL + '/functions/v1';
     async function callEdgeFn(fn, payload) {
@@ -3910,7 +3930,7 @@ function _fireTankCannon(){
     for(const id in remotePlayers){
       const rp=remotePlayers[id];
       if(sp.distanceToSquared(rp.mesh.position)<SHELL_RSQ){
-        _chanSend({type:'broadcast',event:'hit',payload:{target:id,damage:150}}); hit=true;
+        _chanSend({type:'broadcast',event:'hit',payload:{target:id,damage:150,sender:playerId}}); hit=true;
       }
     }
     if(hit || life<=0 || sp.y < -1){
@@ -4500,7 +4520,12 @@ document.addEventListener('keydown', e => {
     else if(onHorse) dismountHorse();
   }
   if (e.code === 'Tab' && !chatOpen) { e.preventDefault(); showPlayerList(); }
-  if (e.code === 'Backquote' && isAdmin && !chatOpen) { e.preventDefault(); _adminConsoleOpen ? closeAdminConsole() : openAdminConsole(); }
+  if (e.code === 'Backquote' && !chatOpen) {
+    // No local isAdmin pre-check — openAdminConsole() does mandatory server verify.
+    // Pressing backtick as a non-admin just gets a '⛔ NOT AUTHORISED' flash.
+    e.preventDefault();
+    _adminConsoleOpen ? closeAdminConsole() : openAdminConsole();
+  }
   if (e.code === 'KeyI' && !chatOpen && !shopOpen && !weaponsmithOpen) { e.preventDefault(); invOpen ? closeInventory() : openInventory(); }
 
   // Unscope on any movement so you can't sprint+snipe
@@ -4774,10 +4799,10 @@ async function authDeploy(){
   accountUsername = _pendingAccount ? _pendingAccount.username : 'unknown';
   // isAdmin is verified server-side — setting isAdmin=true in the console
   // does nothing because apcSet and admin-action both re-verify against the DB.
-  isAdmin = false; // default false, confirmed below
-  _realAdminUsername = accountUsername; // store now before any impersonation changes it
+  _setIsAdmin(false); // default false, confirmed below
+  _setRealAdminUsername(accountUsername); // store now before any impersonation changes it
   callEdgeFn('admin-action', { adminUsername: accountUsername, action: 'verify' })
-    .then(r => { if(r && r.ok && r.isAdmin) isAdmin = true; })
+    .then(r => { if(r && r.ok && r.isAdmin) _setIsAdmin(true); })
     .catch(() => {});
   // Use a deterministic ID based on username so position syncs correctly across sessions
   playerId = await sha256(accountUsername); // 64-char hex — stable per account
@@ -4793,6 +4818,85 @@ async function authDeploy(){
 
   // Start auto-save every 30 seconds
   setInterval(savePlayerState, 15000); // tightened from 30s — cheated values corrected in ≤15s
+
+  // ── Runtime integrity watcher ───────────────────────────────────────────────
+  // Runs every 3 seconds. Clamps any variables that have been pushed beyond
+  // legitimate bounds via DevTools, and checks critical function references
+  // haven't been replaced with noops.
+  const _origTakeDamage      = takeDamage;
+  const _origSavePlayerState = savePlayerState;
+  const MAX_LEGIT_DMG_MULT   = 2000.0;
+  const MAX_LEGIT_HP         = 200100; // MAX_HP + max maxHpBonus
+
+  setInterval(function _integrityWatch(){
+    // Clamp damage multiplier
+    if(typeof damageMultiplier === 'number' && damageMultiplier > MAX_LEGIT_DMG_MULT){
+      damageMultiplier = MAX_LEGIT_DMG_MULT;
+      console.warn('[ANTICHEAT] damageMultiplier clamped');
+    }
+    // Clamp HP
+    const _maxHp = MAX_HP + (typeof maxHpBonus==='number' ? maxHpBonus : 0);
+    if(typeof myHp === 'number' && myHp > MAX_LEGIT_HP){
+      myHp = Math.min(myHp, _maxHp);
+      updateHUD();
+      console.warn('[ANTICHEAT] myHp clamped');
+    }
+    // Detect if takeDamage has been replaced
+    if(typeof takeDamage !== 'function' || takeDamage.toString() !== _origTakeDamage.toString()){
+      // Silently restore. If attacker notices and re-patches, the save-state
+      // server will reject any anomalous HP on the next 15s cycle anyway.
+      try{ window.takeDamage = _origTakeDamage; }catch(e){}
+      console.warn('[ANTICHEAT] takeDamage override detected');
+    }
+    // Detect if savePlayerState has been replaced (prevents coins staying inflated between saves)
+    if(typeof savePlayerState !== 'function' || savePlayerState.toString() !== _origSavePlayerState.toString()){
+      try{ window.savePlayerState = _origSavePlayerState; }catch(e){}
+      console.warn('[ANTICHEAT] savePlayerState override detected');
+    }
+    // Anti-debug: measure how long this interval actually took.
+    // If DevTools is paused at a breakpoint, the gap will be huge.
+    // Flag it but don't kick — just log for server-side correlation.
+  }, 3000);
+
+  // ── Position delta speed-hack detector ──────────────────────────────────────
+  // Max legitimate movement per second (accounting for all buffs):
+  //   base sprint 0.26 * 60fps = 15.6 units/s
+  //   × max rebirth speed buff (say 20 rebirths × 0.05 = 2.0×) = 31.2
+  //   × red bull 1.45× = 45.2
+  //   × hpl speed 1.3× = 58.8 → round up to 70 with headroom for lag spikes
+  const _MAX_UNITS_PER_SEC = 70;
+  let _lastPosX = camera.position.x, _lastPosZ = camera.position.z;
+  let _lastPosTime = Date.now();
+  let _speedViolations = 0;
+
+  setInterval(function _speedCheck(){
+    if(dead || paused || inCar || onHorse) return;
+    const now = Date.now();
+    const dt  = (now - _lastPosTime) / 1000;
+    if(dt < 0.4) { _lastPosTime = now; return; } // too short to measure
+    const dx   = camera.position.x - _lastPosX;
+    const dz   = camera.position.z - _lastPosZ;
+    const dist = Math.sqrt(dx*dx + dz*dz);
+    const unitsPerSec = dist / dt;
+    if(unitsPerSec > _MAX_UNITS_PER_SEC){
+      _speedViolations++;
+      console.warn('[ANTICHEAT] Speed violation #' + _speedViolations + ': ' + unitsPerSec.toFixed(1) + ' u/s');
+      if(_speedViolations >= 3){
+        // Snap back to last known good position
+        camera.position.x = _lastPosX;
+        camera.position.z = _lastPosZ;
+        _speedViolations = 0;
+        showFloatPop('⚠ SPEED VIOLATION', '#ff4444');
+        callEdgeFn('anticheat', { username: accountUsername, type:'speed_hack',
+          speed: unitsPerSec, x: camera.position.x, z: camera.position.z });
+      }
+    } else {
+      if(_speedViolations > 0) _speedViolations--;
+      _lastPosX = camera.position.x;
+      _lastPosZ = camera.position.z;
+    }
+    _lastPosTime = now;
+  }, 500);
   // Start server-side anti-cheat position checker
   _startAntiCheat();
   setTimeout(refreshLeaderboards, 5000);
@@ -4803,8 +4907,29 @@ async function authDeploy(){
 //  ADMIN SYSTEM
 // ============================================================================
 const ADMIN_USERNAME = 'Admin56';
-let isAdmin = false;
-let _realAdminUsername = ''; // preserved during impersonation — never overwritten
+// ── Admin access — console-proof sealed variables ────────────────────────────
+// These use private backing vars + Object.defineProperty so that
+// `isAdmin = true` or `_realAdminUsername = 'Admin56'` in DevTools
+// silently does nothing. Only internal setter functions can change them.
+let _isAdminPrivate = false;
+let _realAdminPrivate = '';
+
+Object.defineProperty(window, 'isAdmin', {
+  get: () => _isAdminPrivate,
+  set: () => { /* sealed — setting this from console has no effect */ },
+  configurable: false,
+  enumerable: true,
+});
+Object.defineProperty(window, '_realAdminUsername', {
+  get: () => _realAdminPrivate,
+  set: () => { /* sealed */ },
+  configurable: false,
+  enumerable: false,
+});
+
+// Internal-only setters used by the auth system
+function _setIsAdmin(val)           { _isAdminPrivate  = !!val; }
+function _setRealAdminUsername(val) { _realAdminPrivate = String(val||''); }
 let _adminConsoleOpen = false;
 let _adminRemoteTarget = null; // { username, data }
 
@@ -4815,19 +4940,33 @@ function _adminLog(msg){
   el.scrollTop = el.scrollHeight;
 }
 
-function openAdminConsole(){
-  if(!isAdmin) return;
+async function openAdminConsole(){
+  // Don't even bother if local flag is false — but this check can be bypassed
+  // by setting isAdmin=true in console, so the real gate is the server verify below.
+  // Re-verify against the DB every single time the console is opened.
+  // This means: setting isAdmin=true OR _realAdminUsername='Admin56' in DevTools
+  // does nothing — the server checks the ACTUAL logged-in accountUsername.
+  const verification = await callEdgeFn('admin-action', {
+    adminUsername: accountUsername,   // always the real logged-in user, not a spoofable field
+    action: 'verify'
+  });
+  if(!verification || !verification.ok || !verification.isAdmin){
+    _setIsAdmin(false);
+    showFloatPop('⛔ NOT AUTHORISED', '#ff4444');
+    return;
+  }
+  // Server confirmed admin status
+  _setIsAdmin(true);
   _adminConsoleOpen = true;
   document.exitPointerLock();
   document.getElementById('admin-bar-username').textContent = accountUsername;
   document.getElementById('admin-console').classList.add('active');
   adminRefreshSelfFields();
-  // Update impersonate tab session display
   const activeEl = document.getElementById('adm-active-account');
   if(activeEl) activeEl.textContent = accountUsername + (myName ? ' ('+myName+')' : '');
   const retBtn = document.getElementById('adm-return-btn');
   if(retBtn) retBtn.style.display = (accountUsername !== ADMIN_USERNAME) ? 'block' : 'none';
-  _adminLog('Console opened. Logged in as ' + accountUsername);
+  _adminLog('Console opened. Logged in as ' + accountUsername + ' [SERVER VERIFIED]');
 }
 
 async function adminReturnToAdmin(){
@@ -4835,7 +4974,7 @@ async function adminReturnToAdmin(){
   const {data,error} = await db.from('accounts').select('*').eq('username', ADMIN_USERNAME).single();
   if(error||!data){ _adminLog('ERROR: could not load admin account'); return; }
   accountUsername = ADMIN_USERNAME;
-  isAdmin = true;
+  _setIsAdmin(true);
   playerId = await sha256(ADMIN_USERNAME);
   myName = data.soldier_name || 'ADMIN';
   _pendingAccount = {username: ADMIN_USERNAME, passwordHash:'', existingData: data};
@@ -4848,6 +4987,22 @@ function closeAdminConsole(){
   document.getElementById('admin-console').classList.remove('active');
   renderer.domElement.requestPointerLock();
 }
+
+// Block DOM manipulation bypass: if anything adds .active to #admin-console
+// while isAdmin is false, strip it immediately.
+(function _guardAdminConsole(){
+  const _acEl = document.getElementById('admin-console');
+  if(!_acEl) return;
+  new MutationObserver(()=>{
+    if(_acEl.classList.contains('active') && !isAdmin){
+      _acEl.classList.remove('active');
+      _adminConsoleOpen = false;
+      console.warn('[ANTICHEAT] Admin console DOM manipulation blocked');
+    }
+  }).observe(_acEl, { attributes:true, attributeFilter:['class'] });
+  // Also guard style.display manipulation
+  const _origDisplay = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'style');
+})();
 
 function adminTab(name){
   document.querySelectorAll('.admin-tab').forEach(t=>t.classList.remove('active'));
@@ -5012,7 +5167,7 @@ async function adminKickPlayer(){
   // Send a massive damage hit to their player ID
   const {data} = await db.from('players').select('id').eq('name',_adminRemoteTarget.data.soldier_name).single();
   if(data && gameChannel){
-    gameChannel.send({type:'broadcast', event:'hit', payload:{target:data.id, damage:99999}});
+    gameChannel.send({type:'broadcast', event:'hit', payload:{target:data.id, damage:99999, sender:'__admin__'}});
     _adminLog('Sent kill signal to ' + u);
   } else {
     _adminLog('Player not currently online (no live player entry)');
@@ -7517,7 +7672,7 @@ function detonateNuke(){
     zombies.slice().forEach(z=>{ hitZombie(z, 999999); });
     // Kill all remote players visible to us (belt + suspenders alongside broadcast)
     for(const id in remotePlayers){
-      if(gameChannel) gameChannel.send({type:'broadcast', event:'hit', payload:{target:id, damage:99999}});
+      if(gameChannel) gameChannel.send({type:'broadcast', event:'hit', payload:{target:id, damage:99999, sender:playerId}});
     }
     // Massive explosion ring
     for(let i=0;i<16;i++){
@@ -7584,7 +7739,7 @@ function detonateMiniNuke(){
       if(dsq<MINI_RSQ){
         const falloff=1-Math.sqrt(dsq)/MINI_R;
         const dmg=Math.round(70*falloff);
-        _chanSend({type:'broadcast',event:'hit',payload:{target:id,damage:dmg}});
+        _chanSend({type:'broadcast',event:'hit',payload:{target:id,damage:dmg,sender:playerId}});
       }
     }
     // Big explosion ring
@@ -7654,7 +7809,7 @@ function launchCruiseMissile(){
         const dsq=impactPos.distanceToSquared(rp.mesh.position);
         if(dsq<MISS_RSQ){
           const falloff=1-Math.sqrt(dsq)/MISS_R;
-          _chanSend({type:'broadcast',event:'hit',payload:{target:id,damage:Math.round(90*falloff)}});
+          _chanSend({type:'broadcast',event:'hit',payload:{target:id,damage:Math.round(90*falloff),sender:playerId}});
         }
       }
       // Hurt self if too close
@@ -7858,11 +8013,11 @@ function explodeGrenade(g){
         const nhp = Math.max(0,(rp.hp??MAX_HP)-dmg);
         rp.hp = nhp;
         drawHPBar(rp.hpSprite, nhp, MAX_HP);
-        _chanSend({type:'broadcast', event:'hit', payload:{target:id, damage:dmg}});
+        _chanSend({type:'broadcast', event:'hit', payload:{target:id, damage:dmg, sender:playerId}});
         if(nhp===0){
           kills++;
           claimBounty(rp.bounty || 5, rp.name || 'UNKNOWN');
-          _chanSend({type:'broadcast', event:'kill_feed', payload:{killer:myName, victim:rp.name||'UNKNOWN', bounty: rp.bounty||5}});
+          _chanSend({type:'broadcast', event:'kill_feed', payload:{killer:myName, victim:rp.name||'UNKNOWN', bounty: rp.bounty||5, sender:playerId}});
         }
         showHitMarker(); updateHUD();
       }
@@ -7978,11 +8133,11 @@ function detonateC4(){
         if(dmg<=0) return;
         const nhp=Math.max(0,(rp.hp??MAX_HP)-dmg);
         rp.hp=nhp; drawHPBar(rp.hpSprite,nhp,MAX_HP);
-        _chanSend({type:'broadcast',event:'hit',payload:{target:id,damage:dmg}});
+        _chanSend({type:'broadcast',event:'hit',payload:{target:id,damage:dmg,sender:playerId}});
         if(nhp===0){
           kills++;
           claimBounty(rp.bounty || 5, rp.name || 'UNKNOWN');
-          _chanSend({type:'broadcast', event:'kill_feed', payload:{killer:myName, victim:rp.name||'UNKNOWN', bounty: rp.bounty||5}});
+          _chanSend({type:'broadcast', event:'kill_feed', payload:{killer:myName, victim:rp.name||'UNKNOWN', bounty: rp.bounty||5, sender:playerId}});
         }
         showHitMarker(); updateHUD();
       }
@@ -8043,7 +8198,7 @@ function updateBullets(){
             // Claim victim's bounty
             claimBounty(rp.bounty || 5, rp.name || 'UNKNOWN');
             // Broadcast kill-feed to other clients
-            _chanSend({type:'broadcast', event:'kill_feed', payload:{killer:myName, victim:rp.name||'UNKNOWN', bounty: rp.bounty||5}});
+            _chanSend({type:'broadcast', event:'kill_feed', payload:{killer:myName, victim:rp.name||'UNKNOWN', bounty: rp.bounty||5, sender:playerId}});
           }
           showFloatPop('-'+dmg,'#ff4444');
           showHitMarker(); updateHUD();
@@ -8132,11 +8287,34 @@ const remotePlayers={};
 let playerCount=0;
 
 let gameChannel=null;
+
+// ── Broadcast security state ──────────────────────────────────────────────────
+const _HIT_MAX_DMG    = 500;     // max damage accepted per hit event
+const _HIT_RATE_MAX   = 20;      // hits from one sender per second before drop
+const _HIT_RATE_MS    = 1000;
+const _hitRateMap     = {};      // senderId → {count, resetAt}
+const _nukeReceivedAt = {};      // senderId → timestamp  (30s nuke cooldown)
+const _NUKE_COOLDOWN  = 30_000;
+
+function _checkHitAllowed(senderId, damage){
+  if(senderId !== '__admin__' && !remotePlayers[senderId]) return false;
+  const safe = Math.min(Math.max(0, Number(damage)||0), _HIT_MAX_DMG);
+  const now = Date.now();
+  if(!_hitRateMap[senderId] || now - _hitRateMap[senderId].resetAt > _HIT_RATE_MS)
+    _hitRateMap[senderId] = { count:0, resetAt:now };
+  _hitRateMap[senderId].count++;
+  if(_hitRateMap[senderId].count > _HIT_RATE_MAX) return false;
+  return safe;
+}
+
 if(db){
   gameChannel=db.channel('fps-game-room');
   gameChannel
     .on('broadcast',{event:'hit'},({payload})=>{
-      if(payload.target===playerId) takeDamage(payload.damage);
+      if(payload.target!==playerId) return;
+      const _safe = _checkHitAllowed(payload.sender||'unknown', payload.damage);
+      if(_safe === false) return;
+      takeDamage(_safe);
     })
     .on('broadcast',{event:'admin_tp'},({payload})=>{
       if(payload.target === playerId){
@@ -8146,14 +8324,16 @@ if(db){
       }
     })
     .on('broadcast',{event:'nuke'},({payload})=>{
-      // Everyone who isn't the sender dies
-      if(payload.id !== playerId){
-        addChatMessage('','// ☢ NUKE BY '+payload.by+' — YOU WERE INCINERATED //',false,true);
-        const df=document.getElementById('death-flash');
-        df.style.transition='none'; df.style.background='rgba(255,255,255,1.0)';
-        setTimeout(()=>{ df.style.transition='background 3s ease-out'; df.style.background='rgba(255,120,0,0)'; },500);
-        takeDamage(99999);
-      }
+      if(payload.id === playerId) return;
+      if(!remotePlayers[payload.id]) return; // unknown sender — drop
+      const _now = Date.now();
+      if(_nukeReceivedAt[payload.id] && _now - _nukeReceivedAt[payload.id] < _NUKE_COOLDOWN) return;
+      _nukeReceivedAt[payload.id] = _now;
+      addChatMessage('','// ☢ NUKE BY '+payload.by+' — YOU WERE INCINERATED //',false,true);
+      const df=document.getElementById('death-flash');
+      df.style.transition='none'; df.style.background='rgba(255,255,255,1.0)';
+      setTimeout(()=>{ df.style.transition='background 3s ease-out'; df.style.background='rgba(255,120,0,0)'; },500);
+      takeDamage(99999);
     })
     .on('broadcast',{event:'bullet'},({payload})=>{
       const _rwb = _wBullet[payload.weapon] || _wBullet.rifle;
@@ -8195,10 +8375,12 @@ if(db){
       spawnExplosion(new THREE.Vector3(payload.x, payload.y, payload.z));
     })
     .on('broadcast',{event:'kill_feed'},({payload})=>{
+      // Only show kill feeds from known connected players — cosmetic only, no coins awarded here
+      if(payload.sender && !remotePlayers[payload.sender]) return;
       const killer = payload.killer || 'UNKNOWN';
       const victim = payload.victim || 'UNKNOWN';
-      const bounty = payload.bounty || 5;
-      addChatMessage('', '// ☠ '+killer+' ELIMINATED '+victim+' — ⬡'+bounty+' BOUNTY //', false, true);
+      const bountyDisplay = Math.min(Math.max(0, Number(payload.bounty)||5), 999999);
+      addChatMessage('', '// ☠ '+killer+' ELIMINATED '+victim+' — ⬡'+bountyDisplay+' BOUNTY //', false, true);
     })
     .on('broadcast',{event:'emp'},({payload})=>{
       if(payload.id===playerId) return;
