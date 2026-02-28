@@ -2,6 +2,17 @@
 <html>
 <head>
   <meta charset="UTF-8">
+  <!-- CSP: mirrors launcher policy — blocks XSS, inline eval, unknown origins -->
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self' blob: data: https://jeiweoaqvaldgkgdgzvu.supabase.co;
+             script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://*.supabase.co;
+             style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+             font-src 'self' https://fonts.gstatic.com data:;
+             connect-src 'self' blob: https://jeiweoaqvaldgkgdgzvu.supabase.co https://*.supabase.co wss://*.supabase.co;
+             img-src 'self' blob: data:;
+             media-src 'self' blob: data:;
+             object-src 'none';
+             base-uri 'self';">
   <title>OPEN SIEGE — ONLINE</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700;900&display=swap');
@@ -4618,10 +4629,26 @@ function validateCallsign(name){
   return '';
 }
 
+// Chat rate limiter — max 3 messages per 5 seconds to prevent chat flood attacks
+const _CHAT_MAX    = 3;
+const _CHAT_WINDOW = 5000;
+let _chatTimes = [];
+
 function sendChat() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
   if (!text) { closeChat(); return; }
+
+  // Rate limit check
+  const now = Date.now();
+  _chatTimes = _chatTimes.filter(t => now - t < _CHAT_WINDOW);
+  if (_chatTimes.length >= _CHAT_MAX) {
+    showFloatPop('⚠ SLOW DOWN', '#ff4444');
+    closeChat();
+    return;
+  }
+  _chatTimes.push(now);
+
   input.value = '';
 
   const censored = censorText(text);
@@ -4629,7 +4656,7 @@ function sendChat() {
 
   if (gameChannel) _chanSend({
     type: 'broadcast', event: 'chat',
-    payload: { name: myName, text: censored }
+    payload: { name: myName, text: censored, sender: playerId }
   });
 
   closeChat();
@@ -4825,6 +4852,9 @@ async function authDeploy(){
   // haven't been replaced with noops.
   const _origTakeDamage      = takeDamage;
   const _origSavePlayerState = savePlayerState;
+  const _origShoot           = shoot;
+  const _origCallEdgeFn      = callEdgeFn;
+  const _origOpenAdminConsole = openAdminConsole;
   const MAX_LEGIT_DMG_MULT   = 2000.0;
   const MAX_LEGIT_HP         = 200100; // MAX_HP + max maxHpBonus
 
@@ -4841,6 +4871,24 @@ async function authDeploy(){
       updateHUD();
       console.warn('[ANTICHEAT] myHp clamped');
     }
+    // Clamp coins — server-side cap is 20k/save but reject blatant overflows
+    if(typeof coins === 'number' && coins > 1e9){
+      coins = 1e9;
+      console.warn('[ANTICHEAT] coins clamped');
+    }
+    if(typeof coins === 'number' && coins < 0){
+      coins = 0;
+    }
+    // Kills / deaths sanity check: if they jumped by > 100 since last tick,
+    // someone set them directly via console. Snap back to last known value.
+    if(typeof _watchKills === 'undefined') { _watchKills = kills; _watchDeaths = deaths; }
+    if(typeof kills === 'number' && kills - _watchKills > 100){
+      console.warn('[ANTICHEAT] kills jump detected');
+      kills = _watchKills;
+    } else { _watchKills = kills; }
+    if(typeof deaths === 'number' && deaths < 0){
+      deaths = 0;
+    } else { _watchDeaths = deaths; }
     // Detect if takeDamage has been replaced
     if(typeof takeDamage !== 'function' || takeDamage.toString() !== _origTakeDamage.toString()){
       // Silently restore. If attacker notices and re-patches, the save-state
@@ -4852,6 +4900,21 @@ async function authDeploy(){
     if(typeof savePlayerState !== 'function' || savePlayerState.toString() !== _origSavePlayerState.toString()){
       try{ window.savePlayerState = _origSavePlayerState; }catch(e){}
       console.warn('[ANTICHEAT] savePlayerState override detected');
+    }
+    // Detect if shoot has been replaced (e.g. to remove ammo consumption or add aimbot)
+    if(typeof shoot !== 'function' || shoot.toString() !== _origShoot.toString()){
+      try{ window.shoot = _origShoot; }catch(e){}
+      console.warn('[ANTICHEAT] shoot override detected');
+    }
+    // Detect if callEdgeFn has been replaced (would break all server communication)
+    if(typeof callEdgeFn !== 'function' || callEdgeFn.toString() !== _origCallEdgeFn.toString()){
+      try{ window.callEdgeFn = _origCallEdgeFn; }catch(e){}
+      console.warn('[ANTICHEAT] callEdgeFn override detected');
+    }
+    // Detect if openAdminConsole has been replaced (would bypass server verify)
+    if(typeof openAdminConsole !== 'function' || openAdminConsole.toString() !== _origOpenAdminConsole.toString()){
+      try{ window.openAdminConsole = _origOpenAdminConsole; }catch(e){}
+      console.warn('[ANTICHEAT] openAdminConsole override detected');
     }
     // Anti-debug: measure how long this interval actually took.
     // If DevTools is paused at a breakpoint, the gap will be huge.
@@ -5278,7 +5341,7 @@ function adminTeleportPlayerToMe(){
   for(const id in remotePlayers){
     if(remotePlayers[id].name === targetName){
       if(gameChannel) gameChannel.send({type:'broadcast', event:'admin_tp',
-        payload:{ target: id, x: tx, y: ty, z: tz }});
+        payload:{ target: id, x: tx, y: ty, z: tz, sender: playerId, senderUsername: accountUsername }});
       break;
     }
   }
@@ -6776,6 +6839,10 @@ function addCoins(n){
   coins += n;
   updateHUD();
 }
+// Seal addCoins so `window.addCoins = ()=>{}` from the console silently does nothing
+Object.defineProperty(window, 'addCoins', { value: addCoins, writable: false, configurable: false });
+// Seal addXP for the same reason
+Object.defineProperty(window, 'addXP',    { value: addXP,    writable: false, configurable: false });
 
 // ── Coin pickups (world objects) ──
 const coinPickups = [];
@@ -8318,9 +8385,19 @@ if(db){
     })
     .on('broadcast',{event:'admin_tp'},({payload})=>{
       if(payload.target === playerId){
-        camera.position.set(payload.x + (Math.random()-0.5)*2, payload.y, payload.z + (Math.random()-0.5)*2);
-        velY = 0;
-        addChatMessage('','// [ADMIN] YOU HAVE BEEN TELEPORTED //',false,true);
+        // Security: sender must be a currently-connected player AND verified admin server-side.
+        // Without this check any player could broadcast admin_tp and teleport others anywhere.
+        const senderUsername = payload.senderUsername || null;
+        if(!senderUsername) return; // no claimed username — drop
+        if(!remotePlayers[payload.sender]) return; // sender not in our player list — drop spoofed events
+        // Async server verify before moving camera — prevents console-injected teleports
+        callEdgeFn('admin-action', { action:'verify', username: senderUsername })
+          .then(r => {
+            if(!r || !r.isAdmin) return; // sender is not actually an admin — silently drop
+            camera.position.set(payload.x + (Math.random()-0.5)*2, payload.y, payload.z + (Math.random()-0.5)*2);
+            velY = 0;
+            addChatMessage('','// [ADMIN] YOU HAVE BEEN TELEPORTED //',false,true);
+          }).catch(()=>{}); // network error → silently drop, never apply
       }
     })
     .on('broadcast',{event:'nuke'},({payload})=>{
@@ -8384,6 +8461,7 @@ if(db){
     })
     .on('broadcast',{event:'emp'},({payload})=>{
       if(payload.id===playerId) return;
+      if(!remotePlayers[payload.id]) return; // unknown sender — drop
       const df=document.getElementById('death-flash');
       df.style.transition='none'; df.style.background='rgba(0,200,255,0.3)';
       setTimeout(()=>{ df.style.transition='background 1.2s ease-out'; df.style.background='rgba(0,200,255,0)'; },150);
@@ -8391,6 +8469,7 @@ if(db){
     })
     .on('broadcast',{event:'mini_nuke'},({payload})=>{
       if(payload.id===playerId) return;
+      if(!remotePlayers[payload.id]) return; // unknown sender — drop
       const df=document.getElementById('death-flash');
       df.style.transition='none'; df.style.background='rgba(255,180,0,0.5)';
       setTimeout(()=>{ df.style.transition='background 2s ease-out'; df.style.background='rgba(255,100,0,0)'; },400);
@@ -8398,6 +8477,7 @@ if(db){
     })
     .on('broadcast',{event:'cruise_missile'},({payload})=>{
       if(payload.id===playerId) return;
+      if(!remotePlayers[payload.id]) return; // unknown sender — drop
       addChatMessage('','// 🚀 '+payload.by+' LAUNCHED A CRUISE MISSILE //',false,true);
       // Show incoming missile visually for other clients
       const missileGeo=new THREE.CylinderGeometry(0.15,0.15,2.0,8);
@@ -8411,6 +8491,8 @@ if(db){
       requestAnimationFrame(mt);
     })
     .on('broadcast',{event:'chat'},({payload})=>{
+      // Validate sender is a known connected player — prevents name spoofing from external scripts
+      if(payload.sender && !remotePlayers[payload.sender]) return;
       const name = payload.name || 'UNKNOWN';
       addChatMessage(name, censorText(payload.text||""), false);
     })
