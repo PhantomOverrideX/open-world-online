@@ -35,6 +35,121 @@
     #xp-label { font-size:9px; color:#0af; letter-spacing:1px; margin-top:2px; }
     #controls-hint { font-size:10px; color:#0a0; letter-spacing:1px; margin-top:4px; opacity:.7; }
 
+    /* ── HOTBAR ── */
+    #hotbar-wrap {
+      position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+      display:flex; gap:6px; z-index:200; pointer-events:auto;
+    }
+    .hotbar-slot {
+      width:54px; height:54px; border:1px solid #1a331a;
+      background:rgba(0,8,0,0.82); position:relative;
+      cursor:pointer; transition:border-color .15s, background .15s;
+      display:flex; flex-direction:column; align-items:center;
+      justify-content:center; user-select:none;
+    }
+    .hotbar-slot:hover       { border-color:#0f0; background:rgba(0,20,0,0.92); }
+    .hotbar-slot.drag-over   { border-color:#ffd700; background:rgba(30,25,0,0.92); }
+    .hotbar-slot.has-item    { border-color:#336633; }
+    .hotbar-slot .hs-icon    { font-size:22px; line-height:1; }
+    .hotbar-slot .hs-qty     {
+      position:absolute; bottom:2px; right:4px;
+      font-size:10px; color:#ffd700; font-family:'Orbitron',monospace;
+    }
+    .hotbar-slot .hs-key     {
+      position:absolute; top:2px; left:4px;
+      font-size:8px; color:#0a0; letter-spacing:1px; opacity:.6;
+    }
+    .hotbar-slot .hs-name    {
+      font-size:7px; color:#0a0; letter-spacing:.5px; margin-top:2px;
+      text-align:center; line-height:1.2; max-width:52px;
+      overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+    }
+    /* active glow when used */
+    .hotbar-slot.used {
+      border-color:#ffd700 !important;
+      background:rgba(30,25,0,0.95) !important;
+      animation:hotbar-flash .25s ease-out;
+    }
+    @keyframes hotbar-flash { 0%{box-shadow:0 0 18px #ffd700} 100%{box-shadow:none} }
+    .hotbar-slot.active-weapon {
+      border-color:#0f0 !important;
+      background:rgba(0,25,0,0.95) !important;
+      box-shadow:0 0 10px rgba(0,255,0,0.3);
+    }
+
+    /* ── INVENTORY OVERLAY ── */
+    #inv-overlay {
+      display:none; position:fixed; inset:0;
+      background:rgba(0,0,0,0.7); z-index:600;
+      align-items:center; justify-content:center;
+      pointer-events:auto;
+    }
+    #inv-overlay.open { display:flex; }
+    #inv-panel {
+      background:#050f05; border:1px solid #1a331a;
+      padding:20px; min-width:420px;
+      font-family:'Orbitron',monospace;
+    }
+    #inv-title {
+      font-size:12px; color:#0f0; letter-spacing:4px;
+      margin-bottom:4px;
+    }
+    #inv-subtitle {
+      font-size:9px; color:#336633; letter-spacing:2px;
+      margin-bottom:16px;
+    }
+    #inv-grid {
+      display:grid; grid-template-columns:repeat(6,54px);
+      gap:5px; margin-bottom:16px;
+    }
+    .inv-slot {
+      width:54px; height:54px; border:1px solid #1a331a;
+      background:rgba(0,8,0,0.6); position:relative;
+      cursor:pointer; transition:border-color .15s, background .15s;
+      display:flex; flex-direction:column; align-items:center;
+      justify-content:center; user-select:none;
+    }
+    .inv-slot:hover     { border-color:#0f0; background:rgba(0,20,0,0.92); }
+    .inv-slot.drag-over { border-color:#ffd700; background:rgba(30,25,0,0.92); }
+    .inv-slot.has-item  { border-color:#336633; }
+    .inv-slot .is-icon  { font-size:22px; line-height:1; }
+    .inv-slot .is-qty   {
+      position:absolute; bottom:2px; right:4px;
+      font-size:10px; color:#ffd700; font-family:'Orbitron',monospace;
+    }
+    .inv-slot .is-name  {
+      font-size:7px; color:#0a0; letter-spacing:.5px; margin-top:2px;
+      text-align:center; line-height:1.2; max-width:52px;
+      overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+    }
+    #inv-hotbar-label {
+      font-size:9px; color:#336633; letter-spacing:2px; margin-bottom:8px;
+    }
+    #inv-hotbar-row {
+      display:flex; gap:5px; margin-bottom:16px;
+    }
+    #inv-close-btn {
+      width:100%; padding:8px; background:transparent;
+      border:1px solid #1a331a; color:#0a0; cursor:pointer;
+      font-family:'Orbitron',monospace; font-size:10px; letter-spacing:3px;
+      transition:border-color .15s;
+    }
+    #inv-close-btn:hover { border-color:#0f0; color:#0f0; }
+    #inv-tooltip {
+      position:fixed; background:#050f05; border:1px solid #336633;
+      padding:8px 12px; font-size:10px; color:#0f0;
+      pointer-events:none; z-index:700; display:none;
+      font-family:'Orbitron',monospace; letter-spacing:1px;
+      max-width:180px; line-height:1.6;
+    }
+    /* dragging ghost */
+    #inv-drag-ghost {
+      position:fixed; pointer-events:none; z-index:800;
+      font-size:26px; opacity:.8; display:none;
+      transform:translate(-50%,-50%);
+    }
+
+
     /* ── BOUNTY ── */
     #bounty-val-wrap { margin-top:6px; }
     #bounty-val-lbl { font-size:10px; color:#ff8800; letter-spacing:2px; margin-bottom:2px; }
@@ -926,7 +1041,7 @@
       <div id="bounty-val">⬡ 5</div>
       <div id="contract-progress-lbl" style="font-size:9px;color:#884400;letter-spacing:1px;margin-top:4px;display:none"></div>
     </div>
-    <div id="controls-hint">WASD=MOVE &nbsp; SPACE=JUMP &nbsp; T=CHAT &nbsp; 1-6=WEAPON &nbsp; E=SHOP</div>
+    <div id="controls-hint">WASD=MOVE &nbsp; SPACE=JUMP &nbsp; T=CHAT &nbsp; 1-6=WEAPON &nbsp; E=SHOP &nbsp; I=INVENTORY</div>
   </div>
 </div>
 
@@ -4306,7 +4421,7 @@ document.addEventListener('pointerlockchange', () => {
   const locked = !!document.pointerLockElement;
   document.getElementById('click-hint').style.display = locked ? 'none' : 'block';
   // Browser releases pointer lock on ESC — treat that as pause (not when in car)
-  if (!locked && !paused && !chatOpen && !dead && myName && !inCar) {
+  if (!locked && !paused && !chatOpen && !dead && myName && !inCar && !invOpen) {
     pauseGame();
   }
 });
@@ -4339,15 +4454,20 @@ document.addEventListener('keydown', e => {
   // Block browser shortcuts that fire when Ctrl-sprinting + strafing
   if (e.ctrlKey && !chatOpen) { e.preventDefault(); }
   if (e.code === 'KeyT')   { e.preventDefault(); openChat(); }
-  if (e.code === 'Escape') { e.preventDefault(); if(_adminConsoleOpen){ closeAdminConsole(); return; } if(shopOpen){ closeShop(); return; } if(carDealerOpen){ closeCarDealer(); return; } if(horseDealerOpen){ closeHorseDealer(); return; } if(weaponsmithOpen){ closeWeaponsmith(); return; } const _rb=document.getElementById('rebirth-screen'); if(_rb&&_rb.classList.contains('active')){ closeRebirthScreen(); return; } const _bs=document.getElementById('boss-screen'); if(_bs&&_bs.classList.contains('active')){ closeBossScreen(); return; } const _bh=document.getElementById('bounty-handler-screen'); if(_bh&&_bh.classList.contains('active')){ closeBountyHandlerScreen(); return; } if(!inCar&&!onHorse&&!inTrain) pauseGame(); }
+  if (e.code === 'Escape') { e.preventDefault(); if(_adminConsoleOpen){ closeAdminConsole(); return; } if(invOpen){ closeInventory(); return; } if(shopOpen){ closeShop(); return; } if(carDealerOpen){ closeCarDealer(); return; } if(horseDealerOpen){ closeHorseDealer(); return; } if(weaponsmithOpen){ closeWeaponsmith(); return; } const _rb=document.getElementById('rebirth-screen'); if(_rb&&_rb.classList.contains('active')){ closeRebirthScreen(); return; } const _bs=document.getElementById('boss-screen'); if(_bs&&_bs.classList.contains('active')){ closeBossScreen(); return; } const _bh=document.getElementById('bounty-handler-screen'); if(_bh&&_bh.classList.contains('active')){ closeBountyHandlerScreen(); return; } if(!inCar&&!onHorse&&!inTrain) pauseGame(); }
 
   // Weapon switching 1–4
-  if (e.code === 'Digit1') setWeapon('rifle');
-  if (e.code === 'Digit2') setWeapon('shotgun');
-  if (e.code === 'Digit3') setWeapon('laser');
-  if (e.code === 'Digit4') setWeapon('sniper');
-  if (e.code === 'Digit5') setWeapon('grenade');
-  if (e.code === 'Digit6') setWeapon('c4');
+  // Keys 1-6: equip whatever weapon is in that hotbar slot
+  // Falls back to direct weapon if slot empty (e.g. before inventory loads)
+  for(let _dk=1;_dk<=6;_dk++){
+    if(e.code==='Digit'+_dk){
+      const _hs = hotbar[_dk-1];
+      if(_hs && INV_ITEMS[_hs.id] && INV_ITEMS[_hs.id].isWeapon) setWeapon(INV_ITEMS[_hs.id].weaponKey);
+      else if(_hs && !INV_ITEMS[_hs.id]?.isWeapon) useHotbarSlot(_dk-1); // consumable in slot — use it
+      else { const _wk=['rifle','shotgun','laser','sniper','grenade','c4'][_dk-1]; if(_wk) setWeapon(_wk); }
+      renderHotbar();
+    }
+  }
   if (e.code === 'KeyG' && !chatOpen) { e.preventDefault(); detonateC4(); }
   if (e.code === 'KeyE' && !chatOpen) {
     e.preventDefault();
@@ -4381,6 +4501,7 @@ document.addEventListener('keydown', e => {
   }
   if (e.code === 'Tab' && !chatOpen) { e.preventDefault(); showPlayerList(); }
   if (e.code === 'Backquote' && isAdmin && !chatOpen) { e.preventDefault(); _adminConsoleOpen ? closeAdminConsole() : openAdminConsole(); }
+  if (e.code === 'KeyI' && !chatOpen && !shopOpen && !weaponsmithOpen) { e.preventDefault(); invOpen ? closeInventory() : openInventory(); }
 
   // Unscope on any movement so you can't sprint+snipe
   if (scoped && (e.code==='KeyW'||e.code==='KeyA'||e.code==='KeyS'||e.code==='KeyD'||e.code==='Space')) {
@@ -5060,6 +5181,8 @@ async function savePlayerState(){
     bounty_contract_tier: bountyContractTier,
     owned_cars:           JSON.stringify(ownedCars),
     owned_horses:         JSON.stringify(ownedHorses),
+    inventory:            invToJSON(),
+    hotbar:               hotToJSON(),
   };
   const res = await callEdgeFn('save-state', payload);
   // If server corrected any values, snap local state back so screen matches DB
@@ -5155,6 +5278,12 @@ function loadPlayerState(d){
       Object.keys(oh).forEach(k=>{ if(ownedHorses.hasOwnProperty(k) && oh[k]){ ownedHorses[k]=true; spawnParkedHorse(k); } });
     }catch(e){}
   }
+  // Restore inventory + hotbar
+  if(d.inventory) invFromJSON(d.inventory);
+  else inventory = Array(INV_SIZE).fill(null);
+  if(d.hotbar) hotFromJSON(d.hotbar);
+  else { hotbar = Array(HOT_SIZE).fill(null); DEFAULT_HOTBAR.forEach((id,i)=>{ hotbar[i]={id,qty:1}; }); }
+  renderHotbar();
   // Restore weapon
   if(d.current_weapon) setWeapon(d.current_weapon);
   // Update all HUD elements
@@ -5471,6 +5600,313 @@ const HC = {
   _hplGravMult:  1,
   _hplJumpMult:  1,
 };
+
+// ============================================================================
+//  INVENTORY & HOTBAR SYSTEM
+// ============================================================================
+
+// Item definitions — all weaponsmith consumables
+const INV_ITEMS = {
+  // ── Weapons (equippable — go on hotbar, pressing that slot key equips them) ──
+  rifle:          { label:'RIFLE',          icon:'🔫', color:'#00ff88', maxStack:1, isWeapon:true,  weaponKey:'rifle'   },
+  shotgun:        { label:'SHOTGUN',        icon:'💥', color:'#ff8800', maxStack:1, isWeapon:true,  weaponKey:'shotgun' },
+  laser:          { label:'LASER',          icon:'🔆', color:'#00ccff', maxStack:1, isWeapon:true,  weaponKey:'laser'   },
+  sniper:         { label:'SNIPER',         icon:'🎯', color:'#ffcc00', maxStack:1, isWeapon:true,  weaponKey:'sniper'  },
+  grenade:        { label:'GRENADE',        icon:'💣', color:'#88ff00', maxStack:1, isWeapon:true,  weaponKey:'grenade' },
+  c4:             { label:'C4',             icon:'🧨', color:'#ff4488', maxStack:1, isWeapon:true,  weaponKey:'c4'      },
+  // ── Consumables (use from hotbar or inventory) ──
+  red_bull:       { label:'RED BULL',       icon:'🔴', color:'#ff4444', maxStack:10 },
+  emp_blast:      { label:'EMP BLAST',      icon:'⚡', color:'#00ccff', maxStack:5  },
+  cruise_missile: { label:'CRUISE MISSILE', icon:'🚀', color:'#ff8800', maxStack:5  },
+  mini_nuke:      { label:'MINI NUKE',      icon:'☢',  color:'#ffcc00', maxStack:3  },
+  nuke:           { label:'NUKE',           icon:'💣', color:'#ff2200', maxStack:1  },
+};
+
+// Default hotbar loadout — all 6 weapons pre-slotted
+const DEFAULT_HOTBAR = ['rifle','shotgun','laser','sniper','grenade','c4'];
+
+const INV_SIZE  = 24; // 4 rows × 6 cols
+const HOT_SIZE  = 6;
+
+// Each slot: { id: 'red_bull', qty: 1 } or null
+let inventory = Array(INV_SIZE).fill(null);
+let hotbar    = Array(HOT_SIZE).fill(null);
+let invOpen   = false;
+
+// Drag state
+let _invDrag = null; // { zone:'inv'|'hot', idx:number, item:object }
+
+// ── Add item to inventory ────────────────────────────────────────────────────
+function invAddItem(id, qty=1){
+  const def = INV_ITEMS[id];
+  if(!def) return false;
+  let remaining = qty;
+
+  // First try to stack onto existing slots
+  for(let i=0; i<INV_SIZE && remaining>0; i++){
+    if(inventory[i] && inventory[i].id === id){
+      const space = def.maxStack - inventory[i].qty;
+      const add   = Math.min(space, remaining);
+      inventory[i].qty += add;
+      remaining -= add;
+    }
+  }
+  // Then fill empty slots
+  for(let i=0; i<INV_SIZE && remaining>0; i++){
+    if(!inventory[i]){
+      const add = Math.min(def.maxStack, remaining);
+      inventory[i] = { id, qty: add };
+      remaining -= add;
+    }
+  }
+
+  if(remaining > 0){
+    showFloatPop('⚠ INVENTORY FULL', '#ff4444');
+  }
+
+  renderHotbar();
+  if(invOpen) renderInvGrid();
+  return remaining === 0;
+}
+
+// ── Use an item by id ────────────────────────────────────────────────────────
+function invUseItem(id){
+  switch(id){
+    case 'red_bull':
+      redBullTimer += RED_BULL_DURATION;
+      if(redBullTimer > RED_BULL_DURATION*10) redBullTimer = RED_BULL_DURATION*10;
+      drinkRedBull();
+      break;
+    case 'emp_blast':      detonateEMP();          break;
+    case 'cruise_missile': launchCruiseMissile();  break;
+    case 'mini_nuke':      detonateMiniNuke();     break;
+    case 'nuke':           detonateNuke();         break;
+  }
+}
+
+// ── Use item from hotbar slot ────────────────────────────────────────────────
+function useHotbarSlot(idx){
+  const slot = hotbar[idx];
+  if(!slot) return;
+  const def = INV_ITEMS[slot.id];
+  if(def && def.isWeapon){
+    // Equip the weapon — don't consume it
+    setWeapon(def.weaponKey);
+    renderHotbar();
+    return;
+  }
+  // Consumable — use and decrement
+  invUseItem(slot.id);
+  slot.qty--;
+  if(slot.qty <= 0) hotbar[idx] = null;
+  renderHotbar();
+  if(invOpen) renderInvGrid();
+  savePlayerState();
+  // Flash the slot
+  const el = document.querySelector('#hotbar-wrap .hotbar-slot[data-idx="'+idx+'"]');
+  if(el){ el.classList.add('used'); setTimeout(()=>el.classList.remove('used'),250); }
+}
+
+// ── Render hotbar ────────────────────────────────────────────────────────────
+function renderHotbar(){
+  const wrap = document.getElementById('hotbar-wrap');
+  if(!wrap) return;
+  wrap.innerHTML = '';
+  for(let i=0; i<HOT_SIZE; i++){
+    const slot = hotbar[i];
+    const def  = slot ? INV_ITEMS[slot.id] : null;
+    const el   = document.createElement('div');
+    // Active = weapon in this slot is currently equipped
+    const isActive = slot && def && def.isWeapon && def.weaponKey === currentWeapon;
+    el.className = 'hotbar-slot' + (slot ? ' has-item' : '') + (isActive ? ' active-weapon' : '');
+    el.dataset.idx  = i;
+    el.dataset.zone = 'hot';
+    el.innerHTML = `
+      <span class="hs-key">${i+1}</span>
+      ${slot ? `<span class="hs-icon">${def.icon}</span>
+                <span class="hs-name">${def.label}</span>
+                ${slot.qty>1?'<span class="hs-qty">'+slot.qty+'</span>':''}` : ''}
+    `;
+    // Click to use/equip
+    el.addEventListener('click', ()=>{ if(!invOpen) useHotbarSlot(i); });
+    // Drag events
+    _bindSlotDrag(el, 'hot', i);
+    wrap.appendChild(el);
+  }
+}
+
+// ── Render inventory grid ────────────────────────────────────────────────────
+function renderInvGrid(){
+  const grid = document.getElementById('inv-grid');
+  const hrow = document.getElementById('inv-hotbar-row');
+  if(!grid || !hrow) return;
+
+  // Main grid
+  grid.innerHTML = '';
+  for(let i=0; i<INV_SIZE; i++){
+    const slot = inventory[i];
+    const def  = slot ? INV_ITEMS[slot.id] : null;
+    const el   = document.createElement('div');
+    el.className = 'inv-slot' + (slot ? ' has-item' : '');
+    el.dataset.idx  = i;
+    el.dataset.zone = 'inv';
+    if(slot) el.innerHTML = `
+      <span class="is-icon">${def.icon}</span>
+      <span class="is-name">${def.label}</span>
+      ${slot.qty>1?'<span class="is-qty">'+slot.qty+'</span>':''}
+    `;
+    _bindSlotDrag(el, 'inv', i);
+    _bindSlotTooltip(el, slot);
+    grid.appendChild(el);
+  }
+
+  // Hotbar row inside inventory panel
+  hrow.innerHTML = '';
+  for(let i=0; i<HOT_SIZE; i++){
+    const slot = hotbar[i];
+    const def  = slot ? INV_ITEMS[slot.id] : null;
+    const el   = document.createElement('div');
+    el.className = 'hotbar-slot' + (slot ? ' has-item' : '');
+    el.dataset.idx  = i;
+    el.dataset.zone = 'hot';
+    el.innerHTML = `
+      <span class="hs-key">${i+1}</span>
+      ${slot ? `<span class="hs-icon">${def.icon}</span>
+                <span class="hs-name">${def.label}</span>
+                ${slot.qty>1?'<span class="hs-qty">'+slot.qty+'</span>':''}` : ''}
+    `;
+    _bindSlotDrag(el, 'hot', i);
+    _bindSlotTooltip(el, slot);
+    hrow.appendChild(el);
+  }
+}
+
+// ── Tooltip ──────────────────────────────────────────────────────────────────
+function _bindSlotTooltip(el, slot){
+  const tip = document.getElementById('inv-tooltip');
+  if(!tip) return;
+  el.addEventListener('mouseenter', e=>{
+    if(!slot){ tip.style.display='none'; return; }
+    const def = INV_ITEMS[slot.id];
+    tip.innerHTML = `<span style="color:${def.color}">${def.icon} ${def.label}</span><br>QTY: ${slot.qty}`;
+    tip.style.display='block';
+    tip.style.left=(e.clientX+12)+'px';
+    tip.style.top =(e.clientY+12)+'px';
+  });
+  el.addEventListener('mousemove', e=>{
+    tip.style.left=(e.clientX+12)+'px';
+    tip.style.top =(e.clientY+12)+'px';
+  });
+  el.addEventListener('mouseleave', ()=>{ tip.style.display='none'; });
+}
+
+// ── Drag and drop ────────────────────────────────────────────────────────────
+const _ghost = ()=>document.getElementById('inv-drag-ghost');
+
+function _bindSlotDrag(el, zone, idx){
+  el.addEventListener('mousedown', e=>{
+    if(e.button!==0) return;
+    const arr  = zone==='inv' ? inventory : hotbar;
+    const slot = arr[idx];
+    if(!slot) return;
+    e.preventDefault();
+    _invDrag = { zone, idx, item: {...slot} };
+    const def = INV_ITEMS[slot.id];
+    const g   = _ghost();
+    g.textContent = def.icon;
+    g.style.display='block';
+    g.style.left=e.clientX+'px';
+    g.style.top =e.clientY+'px';
+  });
+  el.addEventListener('dragover',  e=>{ e.preventDefault(); el.classList.add('drag-over'); });
+  el.addEventListener('dragleave', e=>{ el.classList.remove('drag-over'); });
+  el.addEventListener('drop', e=>{
+    e.preventDefault(); el.classList.remove('drag-over');
+    _invDrop(zone, idx);
+  });
+  // Make droppable even without HTML5 drag (using mouseup)
+  el.addEventListener('mouseup', e=>{
+    if(!_invDrag) return;
+    _invDrop(zone, idx);
+  });
+}
+
+// Global mousemove for ghost
+window.addEventListener('mousemove', e=>{
+  if(!_invDrag) return;
+  const g = _ghost();
+  g.style.left=e.clientX+'px';
+  g.style.top =e.clientY+'px';
+});
+window.addEventListener('mouseup', e=>{
+  if(!_invDrag) return;
+  _invDrag = null;
+  const g = _ghost();
+  g.style.display='none';
+});
+
+function _invDrop(toZone, toIdx){
+  if(!_invDrag) return;
+  const {zone:fromZone, idx:fromIdx} = _invDrag;
+  if(fromZone===toZone && fromIdx===toIdx){ _invDrag=null; return; }
+
+  const fromArr = fromZone==='inv' ? inventory : hotbar;
+  const toArr   = toZone  ==='inv' ? inventory : hotbar;
+
+  // Swap the slots
+  const tmp     = toArr[toIdx];
+  toArr[toIdx]  = fromArr[fromIdx];
+  fromArr[fromIdx] = tmp;
+
+  _invDrag = null;
+  _ghost().style.display='none';
+
+  renderHotbar();
+  renderInvGrid();
+  savePlayerState();
+}
+
+// ── Open / close inventory ───────────────────────────────────────────────────
+function openInventory(){
+  if(dead) return;
+  invOpen = true; // set BEFORE exitPointerLock so pointerlockchange doesn't trigger pause
+  document.exitPointerLock();
+  document.getElementById('inv-overlay').classList.add('open');
+  renderInvGrid();
+}
+function closeInventory(){
+  invOpen = false;
+  document.getElementById('inv-overlay').classList.remove('open');
+  document.getElementById('inv-tooltip').style.display='none';
+}
+
+// ── Serialize / deserialize ──────────────────────────────────────────────────
+function invToJSON()  { return JSON.stringify(inventory); }
+function hotToJSON()  { return JSON.stringify(hotbar);    }
+function invFromJSON(s){
+  try{
+    const a = typeof s==='string' ? JSON.parse(s) : s;
+    if(!Array.isArray(a)) return;
+    inventory = Array(INV_SIZE).fill(null);
+    a.forEach((slot,i)=>{ if(i<INV_SIZE) inventory[i]=slot; });
+  }catch(e){}
+}
+function hotFromJSON(s){
+  try{
+    const a = typeof s==='string' ? JSON.parse(s) : s;
+    if(!Array.isArray(a)) return;
+    hotbar = Array(HOT_SIZE).fill(null);
+    a.forEach((slot,i)=>{ if(i<HOT_SIZE) hotbar[i]=slot; });
+  }catch(e){}
+  // Seed default weapons if no weapon items are present anywhere in the hotbar.
+  // Catches: brand new accounts, accounts with old null-only data, and
+  // anyone whose weapon slots were stripped by an older save-state build.
+  const hasWeapon = hotbar.some(s => s && INV_ITEMS[s.id] && INV_ITEMS[s.id].isWeapon);
+  if(!hasWeapon){
+    DEFAULT_HOTBAR.forEach((id,i)=>{ hotbar[i]={ id, qty:1 }; });
+  }
+}
+
 
 function hcToggle(id){
   const h = HC.hacks[id];
@@ -6016,6 +6452,7 @@ function setWeapon(key) {
   // Switch visible FP model
   Object.keys(_fpModels).forEach(k => _fpModels[k].visible = (k===key));
   updateAmmoHUD();
+  renderHotbar(); // update active-weapon highlight
 }
 
 
@@ -6880,20 +7317,17 @@ async function weaponBuy(item){
   const confirmedQty = _res.qty || qty;
   // ────────────────────────────────────────────────────────────────────
 
-  switch(item){
-    case 'red_bull':
-      // stack duration
-      redBullTimer += RED_BULL_DURATION * confirmedQty;
-      if(redBullTimer > RED_BULL_DURATION * 10) redBullTimer = RED_BULL_DURATION * 10;
-      drinkRedBull();
-      break;
-    case 'emp_blast':      detonateEMP();         break;
-    case 'cruise_missile': launchCruiseMissile(); break;
-    case 'mini_nuke':      detonateMiniNuke();    break;
-    case 'nuke':           detonateNuke();        break;
+  // Add to inventory instead of activating immediately.
+  // Player can drag item to hotbar and click to use it.
+  const invDef = INV_ITEMS[item];  // renamed to avoid clash with WEAPON_ITEMS def above
+  const addedOk = invAddItem(item, confirmedQty);
+  if(addedOk && invDef){
+    showFloatPop(invDef.icon + ' ' + invDef.label + ' → INVENTORY', invDef.color || '#0f0');
+    addChatMessage('', '// ' + invDef.icon + ' ' + invDef.label + ' added to inventory — press I to open //', false, true);
   }
   updateHUD();
   refreshWeaponUI();
+  savePlayerState();
 }
 // No cap on damage multiplier — stacks indefinitely
 
@@ -8444,6 +8878,24 @@ animate();
   <div id="weapon-close-hint">[ ESC ] — CLOSE WEAPONSMITH</div>
 </div>
 <div id="redbull-hud"></div>
+
+<!-- HOTBAR -->
+<div id="hotbar-wrap" style="pointer-events:auto"></div>
+
+<!-- INVENTORY OVERLAY -->
+<div id="inv-overlay">
+  <div id="inv-panel">
+    <div id="inv-title">INVENTORY</div>
+    <div id="inv-subtitle">DRAG ITEMS TO HOTBAR · CLICK TO USE FROM HOTBAR</div>
+    <div id="inv-grid"></div>
+    <div id="inv-hotbar-label">HOTBAR</div>
+    <div id="inv-hotbar-row"></div>
+    <button id="inv-close-btn" onclick="closeInventory()">[ I ] CLOSE INVENTORY</button>
+  </div>
+</div>
+<div id="inv-tooltip"></div>
+<div id="inv-drag-ghost"></div>
+
 <div id="coin-pop"></div>
 <div id="god-mode-indicator">⬡ GOD MODE — SHOP INTERIOR ⬡</div>
 
