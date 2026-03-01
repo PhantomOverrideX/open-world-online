@@ -4487,15 +4487,14 @@ document.addEventListener('keydown', e => {
   if (e.code === 'KeyT')   { e.preventDefault(); openChat(); }
   if (e.code === 'Escape') { e.preventDefault(); if(_adminConsoleOpen){ closeAdminConsole(); return; } if(invOpen){ closeInventory(); return; } if(shopOpen){ closeShop(); return; } if(carDealerOpen){ closeCarDealer(); return; } if(horseDealerOpen){ closeHorseDealer(); return; } if(weaponsmithOpen){ closeWeaponsmith(); return; } const _rb=document.getElementById('rebirth-screen'); if(_rb&&_rb.classList.contains('active')){ closeRebirthScreen(); return; } const _bs=document.getElementById('boss-screen'); if(_bs&&_bs.classList.contains('active')){ closeBossScreen(); return; } const _bh=document.getElementById('bounty-handler-screen'); if(_bh&&_bh.classList.contains('active')){ closeBountyHandlerScreen(); return; } if(!inCar&&!onHorse&&!inTrain) pauseGame(); }
 
-  // Weapon switching 1–4
-  // Keys 1-6: equip whatever weapon is in that hotbar slot
-  // Falls back to direct weapon if slot empty (e.g. before inventory loads)
+  // Keys 1–6: equip/use whatever is in that hotbar slot.
+  // Switching to an empty slot clears the equipped weapon instead of keeping the last gun.
   for(let _dk=1;_dk<=6;_dk++){
     if(e.code==='Digit'+_dk){
       const _hs = hotbar[_dk-1];
       if(_hs && INV_ITEMS[_hs.id] && INV_ITEMS[_hs.id].isWeapon) setWeapon(INV_ITEMS[_hs.id].weaponKey);
-      else if(_hs && !INV_ITEMS[_hs.id]?.isWeapon) useHotbarSlot(_dk-1); // consumable in slot — use it
-      else { const _wk=['rifle','shotgun','laser','sniper','grenade','c4'][_dk-1]; if(_wk) setWeapon(_wk); }
+      else if(_hs && !INV_ITEMS[_hs.id]?.isWeapon) useHotbarSlot(_dk-1); // consumable — use it
+      else clearWeapon(); // empty slot — unequip
       renderHotbar();
     }
   }
@@ -4931,6 +4930,14 @@ async function authDeploy(){
   let _lastPosX = camera.position.x, _lastPosZ = camera.position.z;
   let _lastPosTime = Date.now();
   let _speedViolations = 0;
+
+  // Called by respawn() so the teleport doesn't register as a speed violation
+  window._resetSpeedChecker = function(){
+    _lastPosX = camera.position.x;
+    _lastPosZ = camera.position.z;
+    _lastPosTime = Date.now();
+    _speedViolations = 0;
+  };
 
   setInterval(function _speedCheck(){
     if(dead || paused || inCar || onHorse) return;
@@ -6655,8 +6662,8 @@ const _bMats = { rifle:_wBullet.rifle.mat, shotgun:_wBullet.shotgun.mat, laser:_
 // Update HUD weapon label
 function updateWeaponHUD() {
   const el = document.getElementById('gval');
-  if (el && WEAPONS[currentWeapon]) {
-    el.textContent = WEAPONS[currentWeapon].name;
+  if (el) {
+    el.textContent = (currentWeapon && WEAPONS[currentWeapon]) ? WEAPONS[currentWeapon].name : '—';
   }
 }
 
@@ -6671,6 +6678,17 @@ function setWeapon(key) {
   Object.keys(_fpModels).forEach(k => _fpModels[k].visible = (k===key));
   updateAmmoHUD();
   renderHotbar(); // update active-weapon highlight
+}
+
+// Unequip current weapon (called when switching to an empty hotbar slot)
+function clearWeapon() {
+  if (scoped) setScope(false);
+  scopeZoomIdx = 0;
+  currentWeapon = null;
+  updateWeaponHUD();
+  Object.keys(_fpModels).forEach(k => _fpModels[k].visible = false);
+  updateAmmoHUD();
+  renderHotbar();
 }
 
 
@@ -6747,8 +6765,9 @@ document.addEventListener('wheel', e => {
 function shoot() {
   if (dead || paused || inCar) return;
   if (weaponCooldown > 0) return;
+  if (!currentWeapon || !WEAPONS[currentWeapon]) return; // no weapon equipped — nothing to shoot
 
-  const w = WEAPONS[currentWeapon] || WEAPONS.rifle;
+  const w = WEAPONS[currentWeapon];
   // Block fire if out of ammo
   if(ammo[currentWeapon]!==undefined && ammo[currentWeapon]<=0){
     // Flash ammo counter red
@@ -7351,77 +7370,175 @@ function updateCowsWithGuns(){
 // ============================================================================
 //  ONIONS — passive safe-zone wanderers
 // ============================================================================
-const _onionG = {
-  bulb:     new THREE.SphereGeometry(0.38, 8, 6),
-  bodyBot:  new THREE.SphereGeometry(0.32, 8, 6),
-  neck:     new THREE.CylinderGeometry(0.14, 0.18, 0.24, 7),
-  sprout:   new THREE.CylinderGeometry(0.03, 0.06, 0.40, 5),
-  leaf:     new THREE.BoxGeometry(0.06, 0.30, 0.06),
-  uArm:     new THREE.BoxGeometry(0.10, 0.28, 0.10),
-  lArm:     new THREE.BoxGeometry(0.09, 0.24, 0.09),
-  hand:     new THREE.SphereGeometry(0.07, 5, 4),
-  uLeg:     new THREE.BoxGeometry(0.11, 0.26, 0.11),
-  lLeg:     new THREE.BoxGeometry(0.10, 0.22, 0.10),
-  foot:     new THREE.BoxGeometry(0.14, 0.07, 0.20),
-  eyeWhite: new THREE.SphereGeometry(0.07, 5, 4),
-  pupil:    new THREE.SphereGeometry(0.04, 4, 4),
-  smile:    new THREE.BoxGeometry(0.18, 0.04, 0.04),
-  smileEnd: new THREE.BoxGeometry(0.04, 0.06, 0.04),
+// ── Shared onion geometries ───────────────────────────────────────────────────
+const _oG = {
+  bulb:    new THREE.SphereGeometry(0.38, 10, 7),
+  bodyBot: new THREE.SphereGeometry(0.30, 10, 7),
+  neck:    new THREE.CylinderGeometry(0.12, 0.17, 0.22, 8),
+  sprout:  new THREE.CylinderGeometry(0.03, 0.07, 0.38, 6),
+  leaf:    new THREE.BoxGeometry(0.05, 0.28, 0.05),
+  uArm:    new THREE.BoxGeometry(0.09, 0.24, 0.09),
+  lArm:    new THREE.BoxGeometry(0.08, 0.20, 0.08),
+  hand:    new THREE.SphereGeometry(0.065, 5, 4),
+  uLeg:    new THREE.BoxGeometry(0.10, 0.24, 0.10),
+  lLeg:    new THREE.BoxGeometry(0.09, 0.20, 0.09),
+  foot:    new THREE.BoxGeometry(0.13, 0.07, 0.18),
+  eyeW:    new THREE.SphereGeometry(0.065, 6, 4),
+  pupil:   new THREE.SphereGeometry(0.038, 4, 4),
+  smile:   new THREE.BoxGeometry(0.16, 0.035, 0.04),
+  smEnd:   new THREE.BoxGeometry(0.035, 0.055, 0.04),
 };
-const _onionMats = {
-  skin:     new THREE.MeshLambertMaterial({ color: 0xd4a017 }),
-  inner:    new THREE.MeshLambertMaterial({ color: 0xf2d57e }),
-  sprout:   new THREE.MeshLambertMaterial({ color: 0x3aaa44 }),
-  eyeWhite: new THREE.MeshLambertMaterial({ color: 0xffffff }),
-  pupil:    new THREE.MeshBasicMaterial({ color: 0x111111 }),
-  smile:    new THREE.MeshBasicMaterial({ color: 0x3a1a00 }),
-  limb:     new THREE.MeshLambertMaterial({ color: 0xc49010 }),
-  hand:     new THREE.MeshLambertMaterial({ color: 0xf2d57e }),
-};
+const _oMatEyeW  = new THREE.MeshLambertMaterial({ color: 0xffffff });
+const _oMatPupil = new THREE.MeshBasicMaterial({ color: 0x111111 });
+const _oMatSmile = new THREE.MeshBasicMaterial({ color: 0x3a1a00 });
+const _oMatGreen = new THREE.MeshLambertMaterial({ color: 0x3aaa44 });
 
-function makeOnionModel(){
-  const g = new THREE.Group();
-  const add = (geo, mat, x, y, z, rx, ry, rz) => {
+// Colour palettes: [skin, limb, hand]
+const ONION_PALETTES = [
+  [0xd4a017, 0xc49010, 0xf2d57e],  // golden
+  [0xcc3366, 0xaa2244, 0xf08080],  // red
+  [0x7a5cbf, 0x6040a0, 0xc0a8f0],  // purple
+  [0x44aa55, 0x338844, 0x90dd90],  // spring green
+  [0xd46010, 0xb04800, 0xf0a050],  // orange
+  [0x5588cc, 0x3366aa, 0x88bbee],  // blue
+];
+
+function makeOnionModel(palette, sc){
+  sc = sc || 1.0;
+  const mSkin  = new THREE.MeshLambertMaterial({ color: palette[0] });
+  const mLimb  = new THREE.MeshLambertMaterial({ color: palette[1] });
+  const mHand  = new THREE.MeshLambertMaterial({ color: palette[2] });
+  const mInner = new THREE.MeshLambertMaterial({ color: palette[2] });
+
+  const root = new THREE.Group();
+  root.scale.setScalar(sc);
+
+  const addTo = (parent, geo, mat, x, y, z) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
-    if(rx) m.rotation.x = rx;
-    if(ry) m.rotation.y = ry;
-    if(rz) m.rotation.z = rz;
-    g.add(m); return m;
+    parent.add(m); return m;
   };
-  // Onion body — rounded lower + upper bulge
-  add(_onionG.bodyBot, _onionMats.inner, 0, 0.40, 0);
-  add(_onionG.bulb,    _onionMats.skin,  0, 0.65, 0);
-  add(_onionG.neck,    _onionMats.skin,  0, 1.02, 0);
-  // Green sprout on top
-  add(_onionG.sprout, _onionMats.sprout,  0,    1.36, 0);
-  add(_onionG.leaf,   _onionMats.sprout, -0.08, 1.50, 0, 0, 0, -0.3);
-  add(_onionG.leaf,   _onionMats.sprout,  0.08, 1.50, 0, 0, 0,  0.3);
-  add(_onionG.leaf,   _onionMats.sprout,  0,    1.52, 0.08, 0.3);
+
+  // Body
+  addTo(root, _oG.bodyBot, mInner, 0, 0.38, 0);
+  addTo(root, _oG.bulb,    mSkin,  0, 0.64, 0);
+  addTo(root, _oG.neck,    mSkin,  0, 1.00, 0);
+  // Sprout
+  addTo(root, _oG.sprout, _oMatGreen, 0, 1.34, 0);
+  const lL = new THREE.Mesh(_oG.leaf, _oMatGreen); lL.position.set(-0.07, 1.48, 0); lL.rotation.z =  0.32; root.add(lL);
+  const lR = new THREE.Mesh(_oG.leaf, _oMatGreen); lR.position.set( 0.07, 1.48, 0); lR.rotation.z = -0.32; root.add(lR);
+  const lF = new THREE.Mesh(_oG.leaf, _oMatGreen); lF.position.set(0, 1.50, 0.07); lF.rotation.x = -0.28; root.add(lF);
   // Face
-  add(_onionG.eyeWhite, _onionMats.eyeWhite, -0.13, 0.78, 0.36);
-  add(_onionG.eyeWhite, _onionMats.eyeWhite,  0.13, 0.78, 0.36);
-  add(_onionG.pupil,    _onionMats.pupil,    -0.13, 0.78, 0.42);
-  add(_onionG.pupil,    _onionMats.pupil,     0.13, 0.78, 0.42);
-  add(_onionG.smile,    _onionMats.smile,     0,    0.62, 0.38);
-  add(_onionG.smileEnd, _onionMats.smile,    -0.09, 0.63, 0.38);
-  add(_onionG.smileEnd, _onionMats.smile,     0.09, 0.63, 0.38);
-  // Arms
-  add(_onionG.uArm, _onionMats.limb, -0.44, 0.68, 0, 0, 0,  0.28);
-  add(_onionG.lArm, _onionMats.limb, -0.58, 0.44, 0, 0, 0,  0.10);
-  add(_onionG.hand, _onionMats.hand, -0.64, 0.30, 0);
-  add(_onionG.uArm, _onionMats.limb,  0.44, 0.68, 0, 0, 0, -0.28);
-  add(_onionG.lArm, _onionMats.limb,  0.58, 0.44, 0, 0, 0, -0.10);
-  add(_onionG.hand, _onionMats.hand,  0.64, 0.30, 0);
-  // Legs
-  add(_onionG.uLeg, _onionMats.limb, -0.16, 0.14, 0);
-  add(_onionG.lLeg, _onionMats.limb, -0.16,-0.14, 0);
-  add(_onionG.foot, _onionMats.limb, -0.16,-0.30, 0.04);
-  add(_onionG.uLeg, _onionMats.limb,  0.16, 0.14, 0);
-  add(_onionG.lLeg, _onionMats.limb,  0.16,-0.14, 0);
-  add(_onionG.foot, _onionMats.limb,  0.16,-0.30, 0.04);
-  return g;
+  addTo(root, _oG.eyeW,  _oMatEyeW,  -0.12, 0.80, 0.34);
+  addTo(root, _oG.eyeW,  _oMatEyeW,   0.12, 0.80, 0.34);
+  addTo(root, _oG.pupil, _oMatPupil, -0.12, 0.80, 0.39);
+  addTo(root, _oG.pupil, _oMatPupil,  0.12, 0.80, 0.39);
+  addTo(root, _oG.smile, _oMatSmile,  0,    0.64, 0.37);
+  addTo(root, _oG.smEnd, _oMatSmile, -0.08, 0.655, 0.37);
+  addTo(root, _oG.smEnd, _oMatSmile,  0.08, 0.655, 0.37);
+
+  // Arms — pivot Groups at shoulder so rotation is clean
+  const lSh = new THREE.Group(); lSh.position.set(-0.42, 0.76, 0);
+  addTo(lSh, _oG.uArm, mLimb, 0, -0.13, 0);
+  const lEl = new THREE.Group(); lEl.position.set(0, -0.26, 0); lSh.add(lEl);
+  addTo(lEl, _oG.lArm, mLimb, 0, -0.11, 0);
+  addTo(lEl, _oG.hand, mHand, 0, -0.22, 0);
+  root.add(lSh);
+
+  const rSh = new THREE.Group(); rSh.position.set(0.42, 0.76, 0);
+  addTo(rSh, _oG.uArm, mLimb, 0, -0.13, 0);
+  const rEl = new THREE.Group(); rEl.position.set(0, -0.26, 0); rSh.add(rEl);
+  addTo(rEl, _oG.lArm, mLimb, 0, -0.11, 0);
+  addTo(rEl, _oG.hand, mHand, 0, -0.22, 0);
+  root.add(rSh);
+
+  // Legs — pivot Groups at hip
+  const lHip = new THREE.Group(); lHip.position.set(-0.14, 0.18, 0);
+  addTo(lHip, _oG.uLeg, mLimb, 0, -0.13, 0);
+  const lKn = new THREE.Group(); lKn.position.set(0, -0.26, 0); lHip.add(lKn);
+  addTo(lKn, _oG.lLeg, mLimb, 0, -0.11, 0);
+  addTo(lKn, _oG.foot, mLimb, 0, -0.21, 0.05);
+  root.add(lHip);
+
+  const rHip = new THREE.Group(); rHip.position.set(0.14, 0.18, 0);
+  addTo(rHip, _oG.uLeg, mLimb, 0, -0.13, 0);
+  const rKn = new THREE.Group(); rKn.position.set(0, -0.26, 0); rHip.add(rKn);
+  addTo(rKn, _oG.lLeg, mLimb, 0, -0.11, 0);
+  addTo(rKn, _oG.foot, mLimb, 0, -0.21, 0.05);
+  root.add(rHip);
+
+  root.userData.pivots = { lSh, rSh, lHip, rHip };
+  return root;
 }
+
+// ── Speech bubble ─────────────────────────────────────────────────────────────
+const _onionBubbleEl = document.createElement('div');
+_onionBubbleEl.style.cssText = [
+  'position:fixed;pointer-events:none;z-index:500;',
+  'background:rgba(255,255,255,0.93);color:#1a0a00;',
+  "font-family:'Share Tech Mono',monospace;font-size:12px;line-height:1.5;",
+  'padding:7px 12px;border-radius:10px;max-width:220px;text-align:center;',
+  'border:2px solid #c49010;box-shadow:0 2px 12px rgba(0,0,0,0.4);',
+  'transition:opacity 0.3s;opacity:0;white-space:normal;'
+].join('');
+const _onionBubbleTail = document.createElement('div');
+_onionBubbleTail.style.cssText = [
+  'position:absolute;bottom:-10px;left:50%;transform:translateX(-50%);',
+  'width:0;height:0;',
+  'border-left:8px solid transparent;border-right:8px solid transparent;',
+  'border-top:10px solid rgba(255,255,255,0.93);'
+].join('');
+_onionBubbleEl.appendChild(_onionBubbleTail);
+document.body.appendChild(_onionBubbleEl);
+
+const ONION_PHRASES = [
+  // Facts
+  "Honey never expires. They found 3000-year-old honey in Egyptian tombs.",
+  "A day on Venus is longer than a year on Venus.",
+  "Octopuses have three hearts and blue blood.",
+  "There are more possible chess games than atoms in the observable universe.",
+  "Cleopatra lived closer in time to the Moon landing than to the pyramids.",
+  "The Eiffel Tower grows ~15cm taller in summer due to heat expansion.",
+  "Wombat poop is cube-shaped. Nobody fully knows why.",
+  "Bananas are slightly radioactive.",
+  "A group of flamingos is called a flamboyance.",
+  "Crows can recognise human faces and hold grudges for years.",
+  "The longest recorded flight of a chicken is 13 seconds.",
+  "Slugs have four noses.",
+  "The moon drifts 3.8cm farther from Earth every year.",
+  "Sharks are older than trees.",
+  "A bolt of lightning is five times hotter than the surface of the sun.",
+  // Compliments
+  "You look surprisingly well for someone in a war zone.",
+  "Your shooting form is impeccable. Very clean elbow.",
+  "I like your energy today. Very threatening, in a good way.",
+  "Honestly? You are doing great. Keep it up.",
+  "You carry yourself with a quiet dignity. Respect.",
+  "Your reload speed is admirable.",
+  "I do not say this to everyone, but: good job existing today.",
+  "Those boots look really sturdy. Solid choice.",
+  "You have excellent spatial awareness. I was watching.",
+  // Insults
+  "I have seen better movement from a shopping trolley.",
+  "You walk like you have never had knees before.",
+  "No offence but you kind of smell like gunpowder and regret.",
+  "I have seen zombies with better posture.",
+  "Your aim? Generous description. Chaotic.",
+  "You remind me of someone. Specifically, someone bad.",
+  "Not saying you are the worst player I have seen. But top three.",
+  "Do you practise looking confused or does it come naturally?",
+  "Statistically you should have died more by now. Lucky.",
+  "You move like you are reading the controls for the first time.",
+];
+
+let _bubbleOnionIdx  = -1;
+let _bubbleVisible   = false;
+let _bubbleHideTimer = 0;
+const BUBBLE_TALK_DIST = 5.0;
+const BUBBLE_DURATION  = 280;
+const BUBBLE_COOLDOWN  = 420;
+const _onionCooldowns  = {};
+const _onionProjV = new THREE.Vector3();
 
 const onions = [];
 const ONION_COUNT = 8;
@@ -7429,15 +7546,18 @@ const ONION_AREA  = { xMin: -55, xMax: 55, zMin: -80, zMax: -2 };
 
 function spawnOnions(){
   for(let i = 0; i < ONION_COUNT; i++){
-    const x = ONION_AREA.xMin + Math.random() * (ONION_AREA.xMax - ONION_AREA.xMin);
-    const z = ONION_AREA.zMin + Math.random() * (ONION_AREA.zMax - ONION_AREA.zMin);
+    const x   = ONION_AREA.xMin + Math.random() * (ONION_AREA.xMax - ONION_AREA.xMin);
+    const z   = ONION_AREA.zMin + Math.random() * (ONION_AREA.zMax - ONION_AREA.zMin);
     const flY = getFloorY({ x, y: GROUND_Y, z }) - GROUND_Y;
-    const mesh = makeOnionModel();
+    const palette = ONION_PALETTES[i % ONION_PALETTES.length];
+    const sc  = 0.75 + Math.random() * 0.55;
+    const mesh = makeOnionModel(palette, sc);
     mesh.position.set(x, flY, z);
     mesh.rotation.y = Math.random() * Math.PI * 2;
     scene.add(mesh);
     onions.push({
-      mesh, walkT: 0,
+      mesh, sc,
+      walkT: Math.random() * Math.PI * 2,
       wanderAngle: Math.random() * Math.PI * 2,
       wanderTimer: Math.floor(Math.random() * 180),
     });
@@ -7445,28 +7565,83 @@ function spawnOnions(){
 }
 
 function updateOnions(){
-  for(const onion of onions){
+  for(const k in _onionCooldowns) if(_onionCooldowns[k] > 0) _onionCooldowns[k]--;
+  if(_bubbleVisible){
+    _bubbleHideTimer--;
+    if(_bubbleHideTimer <= 0){ _bubbleVisible=false; _onionBubbleEl.style.opacity='0'; _bubbleOnionIdx=-1; }
+  }
+
+  let closestDist = Infinity, closestIdx = -1;
+
+  for(let oi = 0; oi < onions.length; oi++){
+    const onion = onions[oi];
+    const pv = onion.mesh.userData.pivots;
+
+    // Wander
     onion.wanderTimer--;
     if(onion.wanderTimer <= 0){
-      onion.wanderTimer = 180 + Math.floor(Math.random() * 180);
-      onion.wanderAngle += (Math.random() - 0.5) * Math.PI * 1.4;
+      onion.wanderTimer = 160 + Math.floor(Math.random() * 200);
+      onion.wanderAngle += (Math.random() - 0.5) * Math.PI * 1.5;
     }
-    const spd = 0.012;
-    const nx = onion.mesh.position.x + Math.sin(onion.wanderAngle) * spd;
-    const nz = onion.mesh.position.z + Math.cos(onion.wanderAngle) * spd;
+    const nx = onion.mesh.position.x + Math.sin(onion.wanderAngle) * 0.011;
+    const nz = onion.mesh.position.z + Math.cos(onion.wanderAngle) * 0.011;
     if(nx >= ONION_AREA.xMin && nx <= ONION_AREA.xMax &&
        nz >= ONION_AREA.zMin && nz <= ONION_AREA.zMax &&
        !checkEnvCol({ x: nx, y: 0, z: nz })){
       onion.mesh.position.x = nx;
       onion.mesh.position.z = nz;
     } else {
-      onion.wanderAngle += Math.PI + (Math.random() - 0.5) * 0.8;
+      onion.wanderAngle += Math.PI + (Math.random() - 0.5) * 0.9;
       onion.wanderTimer = 60;
     }
     onion.mesh.rotation.y = onion.wanderAngle;
-    // Walking bob
-    onion.walkT += 0.10;
-    onion.mesh.position.y += Math.sin(onion.walkT * 2) * 0.003;
+
+    // Limb swing animation
+    onion.walkT += 0.09;
+    const sw = Math.sin(onion.walkT) * 0.38;
+    pv.lSh.rotation.x  =  sw;   pv.rSh.rotation.x  = -sw;
+    pv.lHip.rotation.x = -sw * 0.7; pv.rHip.rotation.x =  sw * 0.7;
+    pv.lSh.rotation.z  =  0.22; pv.rSh.rotation.z   = -0.22;
+    onion.mesh.position.y += Math.sin(onion.walkT * 2) * 0.002;
+
+    // Distance to player
+    const dx = camera.position.x - onion.mesh.position.x;
+    const dz = camera.position.z - onion.mesh.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if(dist < closestDist){ closestDist = dist; closestIdx = oi; }
+  }
+
+  // Trigger speech when player walks up to an onion
+  if(closestIdx >= 0 && closestDist < BUBBLE_TALK_DIST &&
+     !dead && !paused && (_onionCooldowns[closestIdx] || 0) === 0 &&
+     closestIdx !== _bubbleOnionIdx){
+    const phrase = ONION_PHRASES[Math.floor(Math.random() * ONION_PHRASES.length)];
+    _onionBubbleEl.innerHTML = '';
+    const txt = document.createElement('span'); txt.textContent = phrase;
+    _onionBubbleEl.appendChild(txt);
+    _onionBubbleEl.appendChild(_onionBubbleTail);
+    _bubbleVisible = true; _bubbleHideTimer = BUBBLE_DURATION;
+    _bubbleOnionIdx = closestIdx; _onionCooldowns[closestIdx] = BUBBLE_COOLDOWN;
+    _onionBubbleEl.style.opacity = '1';
+  }
+
+  // Position bubble above the currently talking onion
+  if(_bubbleVisible && _bubbleOnionIdx >= 0 && onions[_bubbleOnionIdx]){
+    const onion = onions[_bubbleOnionIdx];
+    _onionProjV.set(onion.mesh.position.x, onion.mesh.position.y + 1.8 * onion.sc, onion.mesh.position.z);
+    _onionProjV.project(camera);
+    if(_onionProjV.z > 1){
+      _onionBubbleEl.style.opacity = '0'; // behind camera
+    } else {
+      const sx = (_onionProjV.x  + 1) * window.innerWidth  / 2;
+      const sy = (-_onionProjV.y + 1) * window.innerHeight / 2;
+      const fade = _bubbleHideTimer < 40 ? (_bubbleHideTimer / 40).toFixed(2) : '1';
+      _onionBubbleEl.style.opacity = fade;
+      const bw = _onionBubbleEl.offsetWidth  || 180;
+      const bh = _onionBubbleEl.offsetHeight || 60;
+      _onionBubbleEl.style.left = (sx - bw / 2) + 'px';
+      _onionBubbleEl.style.top  = (sy - bh - 10) + 'px';
+    }
   }
 }
 
@@ -8681,6 +8856,8 @@ function respawn(){
   _domDf.style.background='rgba(255,0,0,0)';
   updateHUD();
   if(db) db.from('players').update({hp:MAX_HP}).eq('id',playerId);
+  // Reset speed checker so the respawn teleport doesn't count as a violation
+  if(typeof _resetSpeedChecker === 'function') _resetSpeedChecker();
 }
 
 // ============================================================================
