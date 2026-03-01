@@ -417,6 +417,51 @@
     }
     #pause-keybinds span { color:#0f0; }
 
+    /* ── PLAYER CUSTOMIZER ── */
+    #customizer-screen {
+      position:fixed; inset:0; z-index:750;
+      background:rgba(0,0,0,0.92);
+      display:none; flex-direction:row;
+      align-items:center; justify-content:center; gap:36px;
+      backdrop-filter:blur(4px);
+    }
+    #customizer-screen.active { display:flex; }
+    #customizer-panel {
+      background:rgba(0,12,0,0.95); border:1px solid #0a0;
+      padding:28px 26px; min-width:300px; max-width:340px;
+      font-family:'Orbitron',monospace;
+    }
+    #customizer-title {
+      font-size:16px; font-weight:900; color:#0f0;
+      letter-spacing:5px; margin-bottom:4px;
+      text-shadow:0 0 12px #0f0;
+    }
+    #customizer-sub { font-size:9px; color:#0a0; letter-spacing:3px; margin-bottom:24px; }
+    .cust-row { margin-bottom:18px; }
+    .cust-label { font-size:9px; color:#0a0; letter-spacing:3px; margin-bottom:8px; display:block; }
+    .cust-swatches { display:flex; flex-wrap:wrap; gap:7px; }
+    .cust-swatch {
+      width:28px; height:28px; border:2px solid #222;
+      cursor:pointer; transition:border-color .12s, transform .12s; box-sizing:border-box;
+    }
+    .cust-swatch:hover { border-color:#0f0; transform:scale(1.12); }
+    .cust-swatch.selected { border-color:#fff; box-shadow:0 0 8px rgba(255,255,255,0.6); }
+    #customizer-save {
+      font-family:'Orbitron',monospace; font-size:12px; font-weight:700;
+      color:#000; background:#0f0; border:none; padding:12px 0;
+      width:100%; letter-spacing:4px; cursor:pointer; margin-top:10px; transition:background .12s;
+    }
+    #customizer-save:hover { background:#4f4; }
+    #customizer-close {
+      font-family:'Orbitron',monospace; font-size:10px;
+      color:#0a0; background:transparent; border:1px solid #0a0;
+      padding:8px 0; width:100%; letter-spacing:3px; cursor:pointer; margin-top:8px;
+    }
+    #customizer-close:hover { color:#0f0; border-color:#0f0; }
+    #customizer-preview-wrap { display:flex; flex-direction:column; align-items:center; gap:12px; }
+    #customizer-preview { border:1px solid #0a0; background:#050f05; display:block; box-shadow:0 0 18px rgba(0,255,0,0.2); }
+    #customizer-preview-label { font-family:'Orbitron',monospace; font-size:9px; color:#0a0; letter-spacing:3px; }
+
     /* ── SHOP ── */
     #shop-screen {
       position:fixed; inset:0; z-index:800;
@@ -4485,7 +4530,7 @@ document.addEventListener('keydown', e => {
   // Block browser shortcuts that fire when Ctrl-sprinting + strafing
   if (e.ctrlKey && !chatOpen) { e.preventDefault(); }
   if (e.code === 'KeyT')   { e.preventDefault(); openChat(); }
-  if (e.code === 'Escape') { e.preventDefault(); if(_adminConsoleOpen){ closeAdminConsole(); return; } if(invOpen){ closeInventory(); return; } if(shopOpen){ closeShop(); return; } if(carDealerOpen){ closeCarDealer(); return; } if(horseDealerOpen){ closeHorseDealer(); return; } if(weaponsmithOpen){ closeWeaponsmith(); return; } const _rb=document.getElementById('rebirth-screen'); if(_rb&&_rb.classList.contains('active')){ closeRebirthScreen(); return; } const _bs=document.getElementById('boss-screen'); if(_bs&&_bs.classList.contains('active')){ closeBossScreen(); return; } const _bh=document.getElementById('bounty-handler-screen'); if(_bh&&_bh.classList.contains('active')){ closeBountyHandlerScreen(); return; } if(!inCar&&!onHorse&&!inTrain) pauseGame(); }
+  if (e.code === 'Escape') { e.preventDefault(); if(_adminConsoleOpen){ closeAdminConsole(); return; } const _cs=document.getElementById('customizer-screen'); if(_cs&&_cs.classList.contains('active')){ closeCustomizer(); return; } if(invOpen){ closeInventory(); return; } if(shopOpen){ closeShop(); return; } if(carDealerOpen){ closeCarDealer(); return; } if(horseDealerOpen){ closeHorseDealer(); return; } if(weaponsmithOpen){ closeWeaponsmith(); return; } const _rb=document.getElementById('rebirth-screen'); if(_rb&&_rb.classList.contains('active')){ closeRebirthScreen(); return; } const _bs=document.getElementById('boss-screen'); if(_bs&&_bs.classList.contains('active')){ closeBossScreen(); return; } const _bh=document.getElementById('bounty-handler-screen'); if(_bh&&_bh.classList.contains('active')){ closeBountyHandlerScreen(); return; } if(!inCar&&!onHorse&&!inTrain) pauseGame(); }
 
   // Keys 1–6: equip/use whatever is in that hotbar slot.
   // Switching to an empty slot clears the equipped weapon instead of keeping the last gun.
@@ -5408,6 +5453,7 @@ async function savePlayerState(){
     owned_horses:         JSON.stringify(ownedHorses),
     inventory:            invToJSON(),
     hotbar:               hotToJSON(),
+    appearance:           JSON.stringify(playerAppearance),
   };
   const res = await callEdgeFn('save-state', payload);
   // If server corrected any values, snap local state back so screen matches DB
@@ -5489,6 +5535,13 @@ function loadPlayerState(d){
   pvpBountiesClaimed  = d.pvp_bounties_claimed ?? 0;
   bountyContractTier  = d.bounty_contract_tier  ?? 0;
   _lastNotifiedTier   = bountyContractTier - 1;
+  // Restore appearance
+  if(d.appearance){
+    try{
+      const _app = typeof d.appearance==='string' ? JSON.parse(d.appearance) : d.appearance;
+      Object.assign(playerAppearance, _app);
+    }catch(e){}
+  }
   // Restore owned cars
   if(d.owned_cars){
     try{
@@ -9024,6 +9077,7 @@ if(db){
         rp.hp = payload.hp;
         drawHPBar(rp.hpSprite, payload.hp, MAX_HP);
       }
+      if(payload.app) applyAppearanceToModel(rp.mesh, payload.app);
     })
     .on('broadcast',{event:'join'},({payload})=>{
       addChatMessage('', '// ' + (payload.name||'UNKNOWN') + ' JOINED THE FIELD //', false, true);
@@ -9082,6 +9136,7 @@ async function syncPlayer(){
     x:camera.position.x, y:camera.position.y, z:camera.position.z,
     ry:yaw, hp:myHp, name:myName, level:playerLevel,
     bounty: calcBounty(),
+    appearance: JSON.stringify(playerAppearance),
     updated_at:new Date().toISOString()
   });
 }
@@ -9101,53 +9156,66 @@ const _pmG = {
   lLeg:    new THREE.BoxGeometry(0.20, 0.44, 0.20),
   foot:    new THREE.BoxGeometry(0.23, 0.10, 0.36),
 };
-const _pmM = {
-  skin:  new THREE.MeshLambertMaterial({color:0xc8956c}),
-  helm:  new THREE.MeshLambertMaterial({color:0x3a4225}),
-  torso: new THREE.MeshLambertMaterial({color:0x4a5530}),
-  leg:   new THREE.MeshLambertMaterial({color:0x363d1e}),
-  boot:  new THREE.MeshLambertMaterial({color:0x1a1208}),
-};
-// Shared gun geometry for the player model (small blocky weapon)
+// Shared gun geometry (no material — each model instance gets its own gun mat)
 const _pmGunG = {
   body:   new THREE.BoxGeometry(0.07, 0.07, 0.30),
   barrel: new THREE.BoxGeometry(0.03, 0.03, 0.18),
   grip:   new THREE.BoxGeometry(0.05, 0.09, 0.05),
 };
-const _pmGunM = new THREE.MeshLambertMaterial({color:0x222222});
 
-function makePlayerModel(){
-  const g = new THREE.Group();
-  const add = (geo, mat, x, y, z, rx=0,ry=0,rz=0) => {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x,y,z);
-    m.rotation.set(rx,ry,rz);
-    g.add(m);
+// Default appearance — overwritten from DB on login
+const DEFAULT_APPEARANCE = { skin:0xc8956c, helm:0x3a4225, torso:0x4a5530, leg:0x363d1e, boot:0x1a1208 };
+let playerAppearance = Object.assign({}, DEFAULT_APPEARANCE);
+
+// Build a fresh player model with per-instance materials so every player can have unique colors.
+function makePlayerModel(app){
+  app = app || DEFAULT_APPEARANCE;
+  const mat = {
+    skin:  new THREE.MeshLambertMaterial({color: app.skin  || DEFAULT_APPEARANCE.skin}),
+    helm:  new THREE.MeshLambertMaterial({color: app.helm  || DEFAULT_APPEARANCE.helm}),
+    torso: new THREE.MeshLambertMaterial({color: app.torso || DEFAULT_APPEARANCE.torso}),
+    leg:   new THREE.MeshLambertMaterial({color: app.leg   || DEFAULT_APPEARANCE.leg}),
+    boot:  new THREE.MeshLambertMaterial({color: app.boot  || DEFAULT_APPEARANCE.boot}),
+    gun:   new THREE.MeshLambertMaterial({color: 0x222222}),
   };
-  // Head & helmet
-  add(_pmG.head,  _pmM.skin,  0,      0.80, 0);
-  add(_pmG.hTop,  _pmM.helm,  0,      0.96, 0);
-  add(_pmG.hBrim, _pmM.helm,  0,      0.75, 0);
-  // Torso & hips
-  add(_pmG.torso, _pmM.torso, 0,      0.41, 0);
-  add(_pmG.hips,  _pmM.torso, 0,      0.04, 0);
-  // Left arm
-  add(_pmG.uArm, _pmM.torso, -0.40,  0.37, 0);
-  add(_pmG.lArm, _pmM.skin,  -0.40, -0.02, 0);
-  // Right arm — angled forward slightly to hold gun
-  add(_pmG.uArm, _pmM.torso,  0.40,  0.35, 0, -0.35,0,0);
-  add(_pmG.lArm, _pmM.skin,   0.40,  0.02,-0.12, -0.5,0,0);
-  // Gun body held in right hand — offset forward and slightly right
-  add(_pmGunG.body,   _pmGunM,  0.40,  0.04, -0.22);
-  add(_pmGunG.barrel, _pmGunM,  0.40,  0.05, -0.43);
-  add(_pmGunG.grip,   _pmGunM,  0.40, -0.04, -0.16);
-  // Legs (mirrored)
+  const g = new THREE.Group();
+  const add = (geo, m, x, y, z, rx=0,ry=0,rz=0) => {
+    const mesh = new THREE.Mesh(geo, m);
+    mesh.position.set(x,y,z);
+    mesh.rotation.set(rx,ry,rz);
+    g.add(mesh);
+  };
+  add(_pmG.head,  mat.skin,  0,     0.80, 0);
+  add(_pmG.hTop,  mat.helm,  0,     0.96, 0);
+  add(_pmG.hBrim, mat.helm,  0,     0.75, 0);
+  add(_pmG.torso, mat.torso, 0,     0.41, 0);
+  add(_pmG.hips,  mat.torso, 0,     0.04, 0);
+  add(_pmG.uArm,  mat.torso,-0.40,  0.37, 0);
+  add(_pmG.lArm,  mat.skin, -0.40, -0.02, 0);
+  add(_pmG.uArm,  mat.torso, 0.40,  0.35, 0, -0.35,0,0);
+  add(_pmG.lArm,  mat.skin,  0.40,  0.02,-0.12,-0.5,0,0);
+  add(_pmGunG.body,   mat.gun, 0.40,  0.04,-0.22);
+  add(_pmGunG.barrel, mat.gun, 0.40,  0.05,-0.43);
+  add(_pmGunG.grip,   mat.gun, 0.40, -0.04,-0.16);
   for(const sx of [-1,1]){
-    add(_pmG.uLeg, _pmM.leg,   sx*0.13, -0.36, 0);
-    add(_pmG.lLeg, _pmM.leg,   sx*0.13, -0.76, 0);
-    add(_pmG.foot, _pmM.boot,  sx*0.13, -1.01, 0.06);
+    add(_pmG.uLeg, mat.leg,  sx*0.13,-0.36, 0);
+    add(_pmG.lLeg, mat.leg,  sx*0.13,-0.76, 0);
+    add(_pmG.foot, mat.boot, sx*0.13,-1.01, 0.06);
   }
+  // Store mat refs so we can recolour without rebuilding
+  g.userData.mat = mat;
   return g;
+}
+
+// Recolour an existing model in-place (no rebuild)
+function applyAppearanceToModel(mesh, app){
+  if(!mesh || !mesh.userData.mat) return;
+  const m = mesh.userData.mat;
+  m.skin.color.setHex(app.skin   || DEFAULT_APPEARANCE.skin);
+  m.helm.color.setHex(app.helm   || DEFAULT_APPEARANCE.helm);
+  m.torso.color.setHex(app.torso || DEFAULT_APPEARANCE.torso);
+  m.leg.color.setHex(app.leg     || DEFAULT_APPEARANCE.leg);
+  m.boot.color.setHex(app.boot   || DEFAULT_APPEARANCE.boot);
 }
 
 const active = new Set(); // reused every loadPlayers call — no GC
@@ -9164,7 +9232,8 @@ async function loadPlayers(){
 
     if(!remotePlayers[p.id]){
       playerCount++;
-      const mesh=makePlayerModel();
+      const _rapp = p.appearance ? (()=>{try{return typeof p.appearance==='string'?JSON.parse(p.appearance):p.appearance;}catch(e){return {};}})() : {};
+      const mesh=makePlayerModel(_rapp);
       const hpSprite=makeHPSprite();
       const nameLabel = (p.level!=null?'LVL'+p.level+' ':'')+(p.name||('P'+playerCount));
       const nameSprite=makeNameSprite(nameLabel, p.bounty||5);
@@ -9224,7 +9293,7 @@ function _broadcastPos(){
     _lastBcX=camera.position.x; _lastBcZ=camera.position.z; _lastBcHp=myHp;
     _chanSend({type:'broadcast', event:'pos', payload:{
       id:playerId, x:camera.position.x, y:camera.position.y, z:camera.position.z,
-      ry:yaw, hp:myHp
+      ry:yaw, hp:myHp, app:playerAppearance
     }});
   }
 }
@@ -9257,6 +9326,176 @@ window.confirmName = function(){
 //  PAUSE SYSTEM
 // ============================================================================
 let paused = false;
+
+// ============================================================================
+//  PLAYER CUSTOMIZER
+// ============================================================================
+const CUST_PALETTES = {
+  skin: [
+    { hex: 0xffe0bd, label: 'Fair' },
+    { hex: 0xf1c27d, label: 'Light' },
+    { hex: 0xc8956c, label: 'Medium' },
+    { hex: 0x8d5524, label: 'Tan' },
+    { hex: 0x5c3317, label: 'Deep' },
+    { hex: 0x3b1f0e, label: 'Ebony' },
+    // Fun extras
+    { hex: 0x77dd77, label: 'Alien' },
+    { hex: 0x7ec8e3, label: 'Frost' },
+    { hex: 0xff9999, label: 'Sunburn' },
+  ],
+  helm: [
+    { hex: 0x3a4225, label: 'Olive' },
+    { hex: 0x1a1a1a, label: 'Black' },
+    { hex: 0x888888, label: 'Grey' },
+    { hex: 0xd4c87a, label: 'Desert' },
+    { hex: 0x2c3e50, label: 'Navy' },
+    { hex: 0x8b0000, label: 'Red' },
+    { hex: 0x004d00, label: 'Forest' },
+    { hex: 0xc0392b, label: 'Crimson' },
+    { hex: 0x6a0dad, label: 'Purple' },
+    { hex: 0xff6600, label: 'Orange' },
+    { hex: 0xffd700, label: 'Gold' },
+    { hex: 0xffffff, label: 'White' },
+  ],
+  torso: [
+    { hex: 0x4a5530, label: 'Olive' },
+    { hex: 0x1a1a1a, label: 'Black' },
+    { hex: 0x888888, label: 'Grey' },
+    { hex: 0xd4c87a, label: 'Desert' },
+    { hex: 0x2c3e50, label: 'Navy' },
+    { hex: 0x8b0000, label: 'Red' },
+    { hex: 0x004d00, label: 'Forest' },
+    { hex: 0xc0392b, label: 'Crimson' },
+    { hex: 0x6a0dad, label: 'Purple' },
+    { hex: 0xff6600, label: 'Orange' },
+    { hex: 0xffd700, label: 'Gold' },
+    { hex: 0xffffff, label: 'White' },
+  ],
+  leg: [
+    { hex: 0x363d1e, label: 'Olive' },
+    { hex: 0x111111, label: 'Black' },
+    { hex: 0x666666, label: 'Grey' },
+    { hex: 0xb8a050, label: 'Desert' },
+    { hex: 0x1a2535, label: 'Navy' },
+    { hex: 0x6b0000, label: 'Red' },
+    { hex: 0x003300, label: 'Forest' },
+    { hex: 0xc0392b, label: 'Crimson' },
+    { hex: 0x4a0080, label: 'Purple' },
+    { hex: 0xd45500, label: 'Orange' },
+    { hex: 0xdaa520, label: 'Gold' },
+    { hex: 0xdddddd, label: 'White' },
+  ],
+  boot: [
+    { hex: 0x1a1208, label: 'Dark' },
+    { hex: 0x3d2b1f, label: 'Brown' },
+    { hex: 0x5c4033, label: 'Tan' },
+    { hex: 0x222222, label: 'Black' },
+    { hex: 0x556b2f, label: 'Olive' },
+    { hex: 0x8b0000, label: 'Red' },
+    { hex: 0xffd700, label: 'Gold' },
+  ],
+};
+
+// Working copy while customizer is open (committed on Save)
+let _custDraft = {};
+
+// Mini preview scene (created lazily)
+let _custRenderer = null, _custScene = null, _custCamera = null;
+let _custMesh = null, _custAnimId = null;
+
+function _initCustPreview(){
+  if(_custRenderer) return;
+  const canvas = document.getElementById('customizer-preview');
+  _custRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  _custRenderer.setSize(200, 320);
+  _custRenderer.setPixelRatio(1);
+  _custRenderer.setClearColor(0x050f05, 1);
+
+  _custScene = new THREE.Scene();
+  _custCamera = new THREE.PerspectiveCamera(38, 200/320, 0.1, 20);
+  _custCamera.position.set(0, 0.4, 3.4);
+  _custCamera.lookAt(0, 0.2, 0);
+
+  const amb  = new THREE.AmbientLight(0xffffff, 0.55);
+  const dir1 = new THREE.DirectionalLight(0xffffff, 0.9);
+  dir1.position.set(2, 4, 3);
+  const dir2 = new THREE.DirectionalLight(0x88ffcc, 0.35);
+  dir2.position.set(-2, 1, -2);
+  _custScene.add(amb, dir1, dir2);
+}
+
+function _rebuildPreviewMesh(){
+  if(_custMesh){ _custScene.remove(_custMesh); _custMesh = null; }
+  _custMesh = makePlayerModel(_custDraft);
+  // Scale up slightly so the preview fills the canvas
+  _custMesh.scale.setScalar(1.05);
+  _custMesh.position.set(0, -0.3, 0);
+  _custScene.add(_custMesh);
+}
+
+function _custPreviewLoop(){
+  _custAnimId = requestAnimationFrame(_custPreviewLoop);
+  if(_custMesh) _custMesh.rotation.y += 0.012;
+  _custRenderer.render(_custScene, _custCamera);
+}
+
+// Build swatch rows
+function _buildSwatchRows(){
+  for(const part of ['skin','helm','torso','leg','boot']){
+    const el = document.getElementById('cust-'+part);
+    if(!el) continue;
+    el.innerHTML = '';
+    CUST_PALETTES[part].forEach(({hex, label}) => {
+      const sw = document.createElement('div');
+      sw.className = 'cust-swatch' + (_custDraft[part] === hex ? ' selected' : '');
+      sw.style.background = '#' + hex.toString(16).padStart(6,'0');
+      sw.title = label;
+      sw.onclick = () => {
+        _custDraft[part] = hex;
+        // Update selected state in this row
+        el.querySelectorAll('.cust-swatch').forEach(s => s.classList.remove('selected'));
+        sw.classList.add('selected');
+        // Recolour preview without full rebuild
+        if(_custMesh) applyAppearanceToModel(_custMesh, _custDraft);
+      };
+      el.appendChild(sw);
+    });
+  }
+}
+
+function openCustomizer(){
+  // Start from current appearance
+  _custDraft = Object.assign({}, playerAppearance);
+  _initCustPreview();
+  _buildSwatchRows();
+  _rebuildPreviewMesh();
+  document.getElementById('pause-screen').classList.remove('active');
+  document.getElementById('customizer-screen').classList.add('active');
+  if(!_custAnimId) _custPreviewLoop();
+}
+
+function closeCustomizer(){
+  document.getElementById('customizer-screen').classList.remove('active');
+  document.getElementById('pause-screen').classList.add('active');
+  if(_custAnimId){ cancelAnimationFrame(_custAnimId); _custAnimId = null; }
+}
+
+function saveCustomizer(){
+  Object.assign(playerAppearance, _custDraft);
+  // Immediately recolour our own 3-D body visible to others
+  for(const id in remotePlayers){
+    // remotePlayers are other people; our own mesh is never in this map.
+    // Nothing to do here — others see us via broadcast.
+  }
+  // Broadcast immediately so online players see new look without waiting for DB poll
+  _chanSend({type:'broadcast', event:'pos', payload:{
+    id:playerId, x:camera.position.x, y:camera.position.y, z:camera.position.z,
+    ry:yaw, hp:myHp, app:playerAppearance
+  }});
+  savePlayerState();
+  closeCustomizer();
+  showFloatPop('✦ APPEARANCE SAVED', '#0f0');
+}
 
 function pauseGame() {
   if (chatOpen || dead) return;   // don't pause while typing or dead
@@ -9685,6 +9924,7 @@ animate();
   <div id="pause-title">PAUSED</div>
   <div id="pause-sub">// GAME SUSPENDED //</div>
   <button class="pause-btn" onclick="resumeGame()">▶ RESUME</button>
+  <button class="pause-btn secondary" onclick="openCustomizer()">✦ CUSTOMIZE SOLDIER</button>
   <button class="pause-btn secondary" onclick="toggleFullscreen()">⛶ FULLSCREEN</button>
   <button class="pause-btn secondary" id="exit-btn" onclick="exitGame()">✕ SAVE &amp; EXIT</button>
   <div id="pause-divider"></div>
@@ -9701,6 +9941,44 @@ animate();
     <span>E</span> — INTERACT (near merchant)
   </div>
 </div>
+<!-- PLAYER CUSTOMIZER -->
+<div id="customizer-screen">
+  <!-- LEFT: options panel -->
+  <div id="customizer-panel">
+    <div id="customizer-title">SOLDIER</div>
+    <div id="customizer-sub">// CUSTOMIZE YOUR APPEARANCE //</div>
+
+    <div class="cust-row">
+      <span class="cust-label">SKIN TONE</span>
+      <div class="cust-swatches" id="cust-skin"></div>
+    </div>
+    <div class="cust-row">
+      <span class="cust-label">HELMET</span>
+      <div class="cust-swatches" id="cust-helm"></div>
+    </div>
+    <div class="cust-row">
+      <span class="cust-label">UNIFORM / TORSO</span>
+      <div class="cust-swatches" id="cust-torso"></div>
+    </div>
+    <div class="cust-row">
+      <span class="cust-label">TROUSERS</span>
+      <div class="cust-swatches" id="cust-leg"></div>
+    </div>
+    <div class="cust-row">
+      <span class="cust-label">BOOTS</span>
+      <div class="cust-swatches" id="cust-boot"></div>
+    </div>
+
+    <button id="customizer-save" onclick="saveCustomizer()">✦ SAVE APPEARANCE</button>
+    <button id="customizer-close" onclick="closeCustomizer()">✕ BACK TO PAUSE</button>
+  </div>
+  <!-- RIGHT: live 3-D preview -->
+  <div id="customizer-preview-wrap">
+    <canvas id="customizer-preview" width="200" height="320"></canvas>
+    <div id="customizer-preview-label">LIVE PREVIEW</div>
+  </div>
+</div>
+
 <!-- PLAYER LIST OVERLAY (Tab) -->
 <div id="player-list-overlay">
   <div id="pl-header">
